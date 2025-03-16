@@ -1,3 +1,5 @@
 *.pyc
 /uploads
 db.sqlite3
+.env
+getter.py

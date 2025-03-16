@@ -2,12 +2,13 @@
 import os
 import time
 from django.db import models
+import json
 
 def custom_upload_path(instance, filename):
     base, ext = os.path.splitext(filename)
     timestamp = str(int(time.time() * 1000000))  # Timestamp en microsegundos
     new_filename = f"{base}_{timestamp}{ext}"
-    return os.path.join("uploads/", new_filename)
+    return  new_filename
 
 class UploadedFile(models.Model):
     STATUS_CHOICES = [
@@ -31,3 +32,29 @@ class UploadedFile(models.Model):
 
     def __str__(self):
         return self.original_name
+# api/models.py
+
+class FileMetadataModel(models.Model):
+    """
+    Modelo que guarda, para cada archivo, metadatos procesados.
+    """
+    uploaded_file = models.ForeignKey('api.UploadedFile', on_delete=models.CASCADE, null=True, blank=True)
+    author = models.CharField(max_length=255, blank=True, null=True)
+    title = models.CharField(max_length=255, blank=True, null=True)
+    content = models.TextField(blank=True, null=True)
+    analysis = models.TextField(blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+
+    # Si deseas guardar todo el JSON original:
+    metadata_json = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def set_metadata_json(self, data: dict):
+        self.metadata_json = json.dumps(data)
+
+    def get_metadata_json(self) -> dict:
+        return json.loads(self.metadata_json) if self.metadata_json else {}
+
+    def __str__(self):
+        return f"Metadata for FileID={self.uploaded_file_id if self.uploaded_file else 'None'}"
