@@ -3,3 +3,7 @@
 db.sqlite3
 .env
 getter.py
+knowledge_base.md
+quotes_final.json
+data.json
+unique_tags.json
