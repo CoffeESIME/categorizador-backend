@@ -73,6 +73,11 @@ class MetadataProcessingView(APIView):
                     continue
                 try:
                     uploaded_file = UploadedFile.objects.get(original_name=file_id)
+                    
+                    # Agregar la ubicación del archivo a los metadatos
+                    if uploaded_file.file_location:
+                        meta["file_location"] = uploaded_file.file_location
+                        
                 except UploadedFile.DoesNotExist:
                     results.append({
                         "id": file_id,
@@ -116,6 +121,10 @@ class MetadataProcessingView(APIView):
                         label="UnconnectedDoc",
                         meta=meta
                     )
+                                        
+                    uploaded_file.status = "vectorized"
+                    uploaded_file.save()
+
                     print(node)
                 json_filename = f"metadata_{uploaded_file.original_name}.json"
                 json_path = os.path.join(settings.MEDIA_ROOT, json_filename)
@@ -131,6 +140,7 @@ class MetadataProcessingView(APIView):
                 result_item = {
                     "id": file_id,
                     "filename": uploaded_file.file.name,
+                    "file_location": uploaded_file.file_location,
                     "status": uploaded_file.status,
                     "num_chunks": len(chunked_texts),
                     "embeddings_created": len(embeddings) if embeddings else 0
@@ -148,13 +158,13 @@ class UnconnectedNodesView(APIView):
     """
     Retorna nodos que no tienen ninguna relación (no conectados),
     mostrando las propiedades guardadas: doc_id, author, title, work, languages, sentiment_word,
-    categories, keywords, content_type, tags, topics y style.
+    categories, keywords, content_type, tags, topics, style y file_location.
     """
     def get(self, request, *args, **kwargs):
         query = """
         MATCH (n:UnconnectedDoc)
         WHERE NOT (n)--()
-        RETURN n.doc_id AS docId,
+        RETURN n.id AS id,
                n.author AS author,
                n.title AS title,
                n.work AS work,
@@ -166,6 +176,8 @@ class UnconnectedNodesView(APIView):
                n.tags AS tags,
                n.topics AS topics,
                n.style AS style,
+               n.doc_id AS doc_id,
+               n.file_location AS file_location,
                labels(n) AS labels
         """
         results = []
@@ -173,7 +185,7 @@ class UnconnectedNodesView(APIView):
             records = session.run(query)
             for record in records:
                 results.append({
-                    "doc_id": record.get("docId"),
+                    "doc_id": record.get("doc_id"),
                     "author": record.get("author"),
                     "title": record.get("title"),
                     "work": record.get("work"),
@@ -185,10 +197,11 @@ class UnconnectedNodesView(APIView):
                     "tags": record.get("tags"),
                     "topics": record.get("topics"),
                     "style": record.get("style"),
+                    "file_location": record.get("file_location"),
+                    "id": record.get("id"),
                     "labels": record.get("labels")
                 })
         return Response(results, status=status.HTTP_200_OK)
-
 
 class GraphView(APIView):
     """
@@ -229,7 +242,7 @@ class GraphView(APIView):
                 # Buscar subgrafo a partir de un nodo de inicio, excluyendo nodos de tipo NodeType
                 query_nodes = f"""
                     MATCH (start)
-                    WHERE (start.doc_id = $startingNodeId OR start.id = $startingNodeId)
+                    WHERE start.id = $startingNodeId
                       AND NOT start:NodeType
                     WITH start
                     MATCH (start)-[r*0..$maxDepth]-(n)
@@ -290,17 +303,17 @@ class GraphView(APIView):
 
         return Response({"nodes": nodes, "edges": edges}, status=status.HTTP_200_OK)
 
-
 class NodeConnectionsView(APIView):
     """
     Endpoint para obtener las conexiones de un nodo específico.
     Se espera recibir el doc_id del nodo en la URL.
     Las conexiones se devuelven como nodos destino con las mismas propiedades de DocumentNode.
     """
-    def get(self, request, nodeId, *args, **kwargs):
+    def get(self, request, nodeId, *args, **kwargs): 
+        
         query = """
-        MATCH (n {doc_id: $nodeId})-[r]->(m)
-        RETURN m.doc_id AS docId,
+        MATCH (n {id: $id})-[r]->(m)
+        RETURN m.id AS id,
                m.author AS author,
                m.title AS title,
                m.work AS work,
@@ -312,14 +325,17 @@ class NodeConnectionsView(APIView):
                m.tags AS tags,
                m.topics AS topics,
                m.style AS style,
+               m.doc_id AS doc_id,
+               m.file_location AS file_location,
                labels(m) AS labels
         """
         connections = []
         with driver.session() as session:
-            result = session.run(query, nodeId=nodeId)
+            # Corregido: parámetro 'id' en lugar de 'nodeId'
+            result = session.run(query, id=nodeId)
             for record in result:
                 connections.append({
-                    "doc_id": record.get("docId"),
+                    "doc_id": record.get("doc_id"),
                     "author": record.get("author"),
                     "title": record.get("title"),
                     "work": record.get("work"),
@@ -331,6 +347,8 @@ class NodeConnectionsView(APIView):
                     "tags": record.get("tags"),
                     "topics": record.get("topics"),
                     "style": record.get("style"),
+                    "file_location": record.get("file_location"),
+                    "id": record.get("id"),
                     "labels": record.get("labels")
                 })
         return Response(connections, status=status.HTTP_200_OK)
@@ -443,7 +461,7 @@ class NodesByTypeView(APIView):
     def get(self, request, nodeType, *args, **kwargs):
         ALLOWED_TYPES = [
             "author", "image", "video", "book", "country", 
-            "tag", "quote", "music", "language", "sentiment"
+            "tag", "quote", "music", "language", "sentiment", 'UnconnectedDoc'
         ]
         if nodeType not in ALLOWED_TYPES:
             return Response(
@@ -504,11 +522,6 @@ class NodesByTypeView(APIView):
                 results.append(node)
         
         return Response(results, status=status.HTTP_200_OK)
-
-    
-    
-    
-    
     
 class UpdateNodeView(APIView):
     """
@@ -526,15 +539,15 @@ class UpdateNodeView(APIView):
         # Construir dinámicamente la cláusula SET
         set_clause = ", ".join([f"n.{key} = ${key}" for key in updates.keys()])
         query = f"""
-        MATCH (n:Document {{doc_id: $doc_id}})
+        MATCH (n:Document {{id: $id}})
         SET {set_clause}
         RETURN n
         """
-        params = {"doc_id": doc_id}
+        params = {"id": id}
         params.update(updates)
         with driver.session() as session:
             session.run(query, **params)
-        return Response({"message": "Nodo actualizado", "doc_id": doc_id}, status=status.HTTP_200_OK)
+        return Response({"message": "Nodo actualizado", "did": id}, status=status.HTTP_200_OK)
 class DeleteNodeConnectionView(APIView):
     """
     Endpoint para eliminar una conexión entre dos nodos.
@@ -543,7 +556,7 @@ class DeleteNodeConnectionView(APIView):
     """
     def delete(self, request, nodeId, connectionNodeId, *args, **kwargs):
         query = """
-        MATCH (n {doc_id: $nodeId})-[r:CONNECTED_TO]->(m {doc_id: $connectionNodeId})
+        MATCH (n {id: $nodeId})-[r:CONNECTED_TO]->(m {id: $connectionNodeId})
         DELETE r
         """
         try:
@@ -553,6 +566,488 @@ class DeleteNodeConnectionView(APIView):
                 {"message": "Conexión eliminada exitosamente."},
                 status=status.HTTP_200_OK
             )
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class ConnectNodesView(APIView):
+    """
+    Endpoint para conectar dos nodos con una relación.
+    
+    POST: Recibe una petición con:
+    {
+      "sourceNodeId": "id_del_nodo_origen",
+      "targetNodeId": "id_del_nodo_destino",
+      "relationshipType": "TIPO_DE_RELACION" (opcional, por defecto "CONNECTED_TO"),
+      "relationshipProperties": {
+        "propiedad1": valor1,
+        "propiedad2": valor2,
+        ...
+      } (opcional)
+    }
+    
+    Crea una relación entre los nodos correspondientes, con las propiedades especificadas.
+    """
+    def post(self, request, *args, **kwargs):
+        source_node_id = request.data.get("sourceNodeId")
+        target_node_id = request.data.get("targetNodeId")
+        relationship_type = request.data.get("relationshipType", "CONNECTED_TO")
+        relationship_properties = request.data.get("relationshipProperties", {})
+        
+        if not source_node_id or not target_node_id:
+            return Response(
+                {"error": "Se requieren los IDs de origen y destino."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validar que los nodos existen
+        query_validate = """
+        MATCH (source) 
+        WHERE source.id = $sourceId
+        WITH count(source) as sourceExists
+        MATCH (target) 
+        WHERE target.id = $targetId
+        WITH sourceExists, count(target) as targetExists
+        RETURN sourceExists > 0 AND targetExists > 0 as nodesExist
+        """
+        
+        # Crear la relación con propiedades
+        query_connect = """
+        MATCH (source) 
+        WHERE source.id = $sourceId
+        MATCH (target) 
+        WHERE target.id = $targetId
+        MERGE (source)-[r:`{}`]->(target)
+        SET r += $relProps
+        RETURN source, target, r
+        """.format(relationship_type)
+        
+        try:
+            with driver.session() as session:
+                # Primero validar que ambos nodos existen
+                validate_result = session.run(query_validate, 
+                                             sourceId=source_node_id, 
+                                             targetId=target_node_id)
+                record = validate_result.single()
+                
+                if not record or not record.get("nodesExist"):
+                    return Response(
+                        {"error": "Uno o ambos nodos no existen."},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                # Crear la relación con las propiedades
+                result = session.run(query_connect, 
+                                    sourceId=source_node_id, 
+                                    targetId=target_node_id,
+                                    relProps=relationship_properties)
+                
+                # Verificar el resultado
+                if result.peek():
+                    return Response(
+                        {
+                            "message": "Nodos conectados exitosamente.",
+                            "sourceId": source_node_id,
+                            "targetId": target_node_id,
+                            "relationshipType": relationship_type,
+                            "relationshipProperties": relationship_properties
+                        },
+                        status=status.HTTP_201_CREATED
+                    )
+                else:
+                    return Response(
+                        {"error": "No se pudo crear la conexión."},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class ConnectUnconnectedNodeView(APIView):
+    """
+    Endpoint para conectar automáticamente un nodo de tipo "UnconnectedDoc" 
+    utilizando LLM local para generar las conexiones adecuadas.
+    
+    POST: Recibe una petición con:
+    {
+      "nodeId": "id_del_nodo_desconectado"
+    }
+    
+    Utiliza LLM local para analizar propiedades y crear conexiones con nodos existentes.
+    Si todas las propiedades se pueden transferir a nodos existentes, elimina el nodo original.
+    """
+    def post(self, request, *args, **kwargs):
+        from langchain_ollama import OllamaEmbeddings
+        from langchain_community.llms import Ollama
+        import json
+        
+        node_id = request.data.get("nodeId")
+        
+        if not node_id:
+            return Response(
+                {"error": "Se requiere el ID del nodo desconectado."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Verificar que el nodo existe y es de tipo UnconnectedDoc
+        query_validate = """
+        MATCH (n:UnconnectedDoc) 
+        WHERE n.id = $nodeId
+        RETURN n
+        """
+        
+        # Obtener todos los tipos de nodos permitidos (excluyendo UnconnectedDoc)
+        allowed_types_query = """
+        MATCH (nt:NodeType)
+        WHERE nt.id <> 'unconnected'
+        RETURN nt.id AS id, nt.name as name
+        """
+        
+        try:
+            with driver.session() as session:
+                # Verificar que el nodo existe y es del tipo correcto
+                validate_result = session.run(query_validate, nodeId=node_id)
+                record = validate_result.single()
+                
+                if not record:
+                    return Response(
+                        {"error": "El nodo no existe o no es de tipo UnconnectedDoc."},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                # Obtener las propiedades del nodo desconectado
+                unconnected_node = dict(record.get("n"))
+                
+                # Obtener los tipos de nodos permitidos
+                allowed_types = []
+                allowed_types_result = session.run(allowed_types_query)
+                for type_record in allowed_types_result:
+                    allowed_types.append({
+                        "id": type_record.get("id"),
+                        "name": type_record.get("name")
+                    })
+                
+                # Inicializar el modelo LLM
+                llm = Ollama(model="mistral")
+                
+                # Construir el prompt para el LLM
+                prompt = f"""
+                Analiza este nodo desconectado y sus propiedades: {json.dumps(unconnected_node, indent=2)}
+                
+                Los tipos de nodos permitidos en el sistema son: {json.dumps(allowed_types, indent=2)}
+                
+                Genera una consulta Cypher para Neo4j que:
+                1. Identifique nodos existentes para conectar con este UnconnectedDoc
+                2. Cree las relaciones apropiadas basadas en las propiedades
+                3. Si es posible transferir todas las propiedades relevantes, elimine el nodo original
+                
+                La consulta debe incluir búsquedas por similitud semántica y nombres/títulos exactos.
+                Retorna SOLO la consulta Cypher, sin explicaciones adicionales.
+                """
+                
+                # Ejecutar el LLM para generar la consulta
+                cypher_query = llm.invoke(prompt).strip()
+                
+                # Ejecutar la consulta generada por el LLM
+                try:
+                    result = session.run(cypher_query)
+                    summary = result.consume()
+                    
+                    # Verificar si el nodo aún existe (no fue eliminado por la consulta)
+                    check_query = """
+                    MATCH (n:UnconnectedDoc) 
+                    WHERE n.id = $nodeId
+                    RETURN n
+                    """
+                    check_result = session.run(check_query, nodeId=node_id)
+                    node_still_exists = check_result.peek() is not None
+                    
+                    return Response({
+                        "message": "Procesamiento del nodo completado.",
+                        "nodeId": node_id,
+                        "nodeEliminated": not node_still_exists,
+                        "querySummary": {
+                            "counters": {
+                                "relationships_created": summary.counters.relationships_created,
+                                "nodes_deleted": summary.counters.nodes_deleted
+                            }
+                        }
+                    }, status=status.HTTP_200_OK)
+                    
+                except Exception as query_error:
+                    return Response({
+                        "error": f"Error al ejecutar la consulta generada: {str(query_error)}",
+                        "generatedQuery": cypher_query
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class TextProcessView(APIView):
+    """
+    Endpoint para procesar texto simple con un LLM.
+    
+    POST: Recibe un texto y lo procesa con un modelo de lenguaje para extraer metadatos.
+    
+    Parámetros esperados:
+    {
+      "input_text": "texto a procesar",
+      "model": "nombre_del_modelo" (opcional, default: "deepseek-r1:32b"),
+      "task": "text" (opcional),
+      "temperature": valor_temperatura (opcional, default: 0.7)
+    }
+    
+    Retorna: metadatos estructurados con author, title, work, tags, sentiment y content.
+    """
+    def post(self, request, *args, **kwargs):
+        from langchain_ollama import ChatOllama
+        from langchain_core.messages import HumanMessage
+        import json
+        import re
+        
+        # Obtener parámetros
+        input_text = request.data.get("input_text")
+        model = request.data.get("model", "deepseek-r1:32b")
+        temperature = float(request.data.get("temperature", 0.7))
+        
+        if not input_text:
+            return Response(
+                {"error": "Se requiere el texto de entrada."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Construir el prompt para solicitar específicamente los campos requeridos
+            system_prompt = """
+            Eres un asistente analítico. Tu respuesta debe ser únicamente un JSON válido sin comentarios adicionales.
+            Analiza el texto proporcionado y extrae la siguiente información:
+            
+            Responde con un JSON EXACTO con este esquema:
+            {
+            "  \"author\": \"Autor (completa si es parcial, por ejemplo, 'Pascal' se transforma en 'Blaise Pascal')\",\n"
+              "title": "Título del contenido (si existe)",
+            "  \"work\": \"Obra o fuente, o una cadena vacía\",\n"
+              "tags": ["etiqueta1", "etiqueta2", ...],
+              "sentiment_word": "Análisis de sentimiento (positivo, negativo, neutral)",
+            "  \"languages\": [\"Código de idioma (ej. 'es', 'en', 'fr', etc.)\"],\n"
+
+            "  \"sentiment_value\": \"Un número entre -1 y 1, donde -1 es extremadamente negativo, 0 es neutral y 1 es extremadamente positivo. Devuelve solamente el número.\",\n"
+            "  \"analysis\": \"Un análisis profundo del contenido.\",\n"
+            "  \"content_type\": \"Tipo de contenido (por ejemplo, 'artículo', 'cita', etc.)\",\n"
+
+              "content": "El texto original limpio"
+            }
+            
+            No incluyas explicaciones adicionales, solo el JSON.
+            "Ejemplo 1:\n"
+            "{\n"
+            "  \"title\": \"El poder del cambio\",\n"
+            "  \"tags\": [\"motivación\", \"cambio\"],\n"
+            "  \"author\": \"Gabriel García Márquez\",\n"
+            "  \"work\": \"Cuentos Cortos\",\n"
+            "  \"languages\": [\"es\"],\n"
+            "  \"sentiment_word\": \"positivo\",\n"
+            "  \"sentiment_value\": 0.7,\n"
+            "  \"analysis\": \"Inspira reflexión y destaca la transformación personal.\",\n"
+            "  \"categories\": [\"Inspiración\", \"Reflexión\"],\n"
+            "  \"keywords\": [\"cambio\", \"transformación\"],\n"
+            "  \"content_type\": \"artículo\",\n"
+            "  \"multilingual\": false,\n"
+            "  \"content\": \"El texto explora cómo los cambios en la vida pueden abrir nuevas oportunidades.\"\n"
+            "}\n\n"
+            "Ejemplo 2:\n"
+            "{\n"
+            "  \"title\": \"\",\n"
+            "  \"tags\": [\"cita\", \"motivación\"],\n"
+            "  \"author\": \"Nelson Mandela\",\n"
+            "  \"work\": \"\",\n"
+            "  \"languages\": [\"en\"],\n"
+            "  \"sentiment_word\": \"positivo\",\n"
+            "  \"sentiment_value\": 0.9,\n"
+            "  \"analysis\": \"Cita que enfatiza la perseverancia ante la adversidad.\",\n"
+            "  \"content_type\": \"cita\",\n"
+            "  \"multilingual\": false,\n"
+            "  \"content\": \"It always seems impossible until it's done.\"\n"
+            "}\n"
+            """
+            
+            # Crear los mensajes para el modelo
+            messages = [
+                HumanMessage(content=system_prompt),
+                HumanMessage(content=input_text)
+            ]
+            
+            # Inicializar el modelo LLM
+            llm = ChatOllama(
+                base_url="http://localhost:11434",
+                model=model,
+                temperature=temperature
+            )
+            
+            # Ejecutar el modelo
+            result = llm.invoke(messages)
+            response_str = result.content if hasattr(result, "content") else result
+            
+            # Extraer el JSON de la respuesta
+            def extract_json_from_response(text):
+                # Primero intentar encontrar JSON entre ```json y ```
+                md_pattern = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+                md_match = md_pattern.search(text)
+                if md_match:
+                    json_str = md_match.group(1)
+                    try:
+                        return json.loads(json_str)
+                    except:
+                        pass
+                
+                # Si no se encuentra, intentar extraer el primer objeto JSON en el texto
+                start = text.find('{')
+                end = text.rfind('}')
+                if start != -1 and end != -1 and start < end:
+                    possible_json = text[start:end+1].strip()
+                    try:
+                        return json.loads(possible_json)
+                    except:
+                        return None
+                return None
+            
+            parsed_result = extract_json_from_response(response_str)
+            
+            if not parsed_result:
+                return Response(
+                    {"error": "Error al parsear la respuesta JSON", "raw": response_str},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
+            # Asegurar que todos los campos solicitados estén presentes
+            required_fields = ["author", "title", "work", "tags", "sentiment", "content", "content_type", "multilingual", "languages", "sentiment_word", "sentiment_value", "analysis"]
+            for field in required_fields:
+                if field not in parsed_result:
+                    parsed_result[field] = "" if field != "tags" else []
+            
+            return Response(parsed_result, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class TextMetadataProcessingView(APIView):
+    """
+    Endpoint para guardar los metadatos de textos procesados.
+    
+    POST: Recibe un array de metadatos de textos y crea archivos JSON en la carpeta apropiada,
+    genera embeddings y crea nodos UnconnectedDoc en Neo4j para cada texto.
+    
+    Parámetros esperados:
+    Array de objetos con los metadatos obtenidos del endpoint TextProcessView, incluyendo:
+    - author: Autor del texto
+    - title: Título del contenido
+    - work: Obra o fuente
+    - tags: Array de etiquetas
+    - sentiment_word: Análisis de sentimiento en palabras (positivo, negativo, neutral)
+    - sentiment_value: Valor numérico de sentimiento (-1 a 1)
+    - analysis: Análisis profundo del contenido
+    - content: El texto original
+    """
+    def post(self, request, *args, **kwargs):
+        from langchain_ollama import OllamaEmbeddings
+        import json
+        import os
+        import uuid
+        
+        try:
+            # Verificar si recibimos un array o un objeto único
+            metadata_list = request.data
+            if not isinstance(metadata_list, list):
+                metadata_list = [metadata_list]  # Convertir a lista si es un objeto único
+            
+            if not metadata_list:
+                return Response(
+                    {"error": "Se requieren metadatos en formato JSON."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Inicializar modelo de embeddings
+            embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+            results = []
+            
+            for metadata in metadata_list:
+                if not metadata or not isinstance(metadata, dict):
+                    results.append({
+                        "error": "Un elemento del array no es un objeto JSON válido."
+                    })
+                    continue
+                
+                # Verificar que el contenido esté presente
+                if not metadata.get("content"):
+                    results.append({
+                        "error": "El campo 'content' es requerido."
+                    })
+                    continue
+                
+                # Generar un UUID único
+                doc_id = str(uuid.uuid4())
+                metadata["id"] = doc_id
+                metadata["doc_id"] = doc_id
+                
+                # Asegurar que los campos requeridos estén presentes
+                required_fields = ["author", "title", "work", "tags", "sentiment_word", 
+                                  "sentiment_value", "analysis", "content"]
+                for field in required_fields:
+                    if field not in metadata:
+                        if field == "tags":
+                            metadata[field] = []
+                        elif field == "sentiment_value":
+                            metadata[field] = 0
+                        else:
+                            metadata[field] = ""
+                
+                # Generar embeddings
+                embeddings = embedding_model.embed_documents([metadata.get("content", "")])
+                
+                # Determinar la ubicación del archivo
+                uploads_dir = os.path.join('uploads', 'texts')
+                if not os.path.exists(uploads_dir):
+                    os.makedirs(uploads_dir)
+                
+                # Guardar el archivo JSON
+                json_filename = f"{doc_id}.json"
+                json_path = os.path.join(uploads_dir, json_filename)
+                file_location = f"uploads/texts/{json_filename}"
+                metadata["file_location"] = file_location
+                
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(metadata, f, ensure_ascii=False, indent=2)
+                
+                # Crear nodo en Neo4j
+                node = store_embedding(
+                    doc_id=doc_id,
+                    embedding=embeddings,
+                    label="UnconnectedDoc",
+                    meta=metadata
+                )
+                
+                results.append({
+                    "status": "OK",
+                    "doc_id": doc_id,
+                    "file_location": file_location,
+                    "message": "Metadatos guardados y nodo creado exitosamente."
+                })
+            
+            return Response({
+                "status": "OK",
+                "results": results
+            }, status=status.HTTP_201_CREATED)
+            
         except Exception as e:
             return Response(
                 {"error": str(e)},

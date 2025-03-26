@@ -1,6 +1,6 @@
 # embeddings_to_neo4j.py
 from .neo4j_client import driver
-
+import uuid
 def close():
     driver.close()
 
@@ -27,7 +27,8 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
         "content_type",
         "tags",
         "topics",
-        "style"
+        "style",
+        "file_location"
     ]
     
     # Primero, hagamos un debug para ver qué estructura tienen los datos
@@ -43,7 +44,7 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
                     print(f"  WARNING: {key} contains nested collections!")
     
     # Preparar las propiedades validando cada una
-    params = {"doc_id": doc_id}
+    params = {"doc_id": doc_id, "id": str(uuid.uuid4())}
     
     # Tratar el embedding por separado (asegurarse de que es una lista plana)
     if isinstance(embedding, list):

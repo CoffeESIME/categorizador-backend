@@ -21,6 +21,9 @@ def image_to_base64(image_path):
     """
     try:
         with Image.open(image_path) as img:
+            # Convertir la imagen a RGB si tiene transparencia (canal alfa)
+            if img.mode in ("RGBA", "LA"):
+                img = img.convert("RGB")
             buffered = BytesIO()
             img.save(buffered, format="JPEG")
             return base64.b64encode(buffered.getvalue()).decode("utf-8")
@@ -352,7 +355,7 @@ class LLMProcessView(APIView):
                     return Response({"error": "El campo file_url es requerido para la tarea 'image_description'."},
                                     status=status.HTTP_400_BAD_REQUEST)
                 file_name = os.path.basename(file_url)
-                file_path = os.path.join(downloads_dir, file_name)
+                file_path = os.path.join(downloads_dir, 'images', file_name)
                 if not os.path.exists(file_path):
                     return Response({"error": "Archivo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
                 
@@ -380,7 +383,7 @@ class LLMProcessView(APIView):
                     return Response({"error": "El campo file_url es requerido para la tarea 'ocr'."},
                                     status=status.HTTP_400_BAD_REQUEST)
                 file_name = os.path.basename(file_url)
-                file_path = os.path.join(downloads_dir, file_name)
+                file_path = os.path.join(downloads_dir, 'images', file_name)
                 if not os.path.exists(file_path):
                     return Response({"error": "Archivo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
                 
@@ -394,7 +397,6 @@ class LLMProcessView(APIView):
                     )
                     
                     prompt = build_ocr_analysis_prompt(extracted_text, analysis_prompt)
-                    print("prompt ##############################",prompt)
                     analysis_model = request.data.get("model", "deepseek-r1:14b")
                     llm = ChatOllama(
                         base_url=base_url,
