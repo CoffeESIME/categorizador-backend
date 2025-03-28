@@ -551,21 +551,59 @@ class UpdateNodeView(APIView):
 class DeleteNodeConnectionView(APIView):
     """
     Endpoint para eliminar una conexión entre dos nodos.
-    Recibe una petición DELETE a /api/nodes/<nodeId>/connections/<connectionNodeId>
-    y elimina la relación CONNECTED_TO entre el nodo con doc_id=nodeId y el nodo con doc_id=connectionNodeId.
+    Recibe una petición DELETE con:
+    {
+        "sourceId": "id_del_nodo_origen",
+        "targetId": "id_del_nodo_destino",
+        "relationshipType": "TIPO_DE_RELACION" (opcional, si no se especifica elimina cualquier relación)
+    }
     """
-    def delete(self, request, nodeId, connectionNodeId, *args, **kwargs):
-        query = """
-        MATCH (n {id: $nodeId})-[r:CONNECTED_TO]->(m {id: $connectionNodeId})
-        DELETE r
-        """
+    def delete(self, request, *args, **kwargs):
+        source_node_id = request.data.get("sourceId")
+        target_node_id = request.data.get("targetId")
+        relationship_type = request.data.get("relationshipType")
+
+        if not source_node_id or not target_node_id:
+            return Response(
+                {"error": "Se requieren los IDs de origen y destino."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Construir la consulta según si se especificó un tipo de relación
+        if relationship_type:
+            query = """
+            MATCH (n {id: $nodeId})-[r:`{}`]->(m {id: $connectionNodeId})
+            DELETE r
+            RETURN count(r) as deletedRelations
+            """.format(relationship_type)
+        else:
+            query = """
+            MATCH (n {id: $nodeId})-[r]->(m {id: $connectionNodeId})
+            DELETE r
+            RETURN count(r) as deletedRelations
+            """
+
         try:
             with driver.session() as session:
-                session.run(query, nodeId=nodeId, connectionNodeId=connectionNodeId)
-            return Response(
-                {"message": "Conexión eliminada exitosamente."},
-                status=status.HTTP_200_OK
-            )
+                result = session.run(query, 
+                                   nodeId=source_node_id, 
+                                   connectionNodeId=target_node_id)
+                record = result.single()
+                deleted_count = record["deletedRelations"] if record else 0
+
+                if deleted_count > 0:
+                    return Response(
+                        {
+                            "message": "Conexión(es) eliminada(s) exitosamente.",
+                            "deletedCount": deleted_count
+                        },
+                        status=status.HTTP_200_OK
+                    )
+                else:
+                    return Response(
+                        {"error": "No se encontró la conexión especificada."},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
         except Exception as e:
             return Response(
                 {"error": str(e)},
@@ -591,8 +629,8 @@ class ConnectNodesView(APIView):
     Crea una relación entre los nodos correspondientes, con las propiedades especificadas.
     """
     def post(self, request, *args, **kwargs):
-        source_node_id = request.data.get("sourceNodeId")
-        target_node_id = request.data.get("targetNodeId")
+        source_node_id = request.data.get("sourceId")
+        target_node_id = request.data.get("targetId")
         relationship_type = request.data.get("relationshipType", "CONNECTED_TO")
         relationship_properties = request.data.get("relationshipProperties", {})
         
