@@ -5,6 +5,8 @@ import sys
 import json
 import uuid
 from neo4j import GraphDatabase
+from weaviate.connect import ConnectionParams
+import weaviate 
 driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "s3cr3t2012"))
 
 def seed_node_types():
@@ -121,7 +123,6 @@ def seed_node_types():
 
     with driver.session() as session:
         for node_type in node_types:
-            # Usamos MERGE para que si el nodo ya existe por ID, solo se actualice
             query = """
             MERGE (nt:NodeType {id: $id})
             SET nt.name = $name,
@@ -142,11 +143,9 @@ def ensure_upload_directories():
     según su tipo.
     """
     base_dir = os.path.join('uploads')
-    # Crear directorio base si no existe
     if not os.path.exists(base_dir):
         os.makedirs(base_dir)
         
-    # Crear subdirectorios para cada tipo de archivo
     subdirs = ['images', 'videos', 'audio', 'documents', 'texts', 'others']
     for subdir in subdirs:
         path = os.path.join(base_dir, subdir)
@@ -155,6 +154,84 @@ def ensure_upload_directories():
     
     print("✅ Directorios de uploads creados correctamente.")
 
+def seed_weaviate_schema():
+    """
+    Conecta a Weaviate y crea las clases (por ejemplo, Imagenes, Textos, Audio, Video)
+    si no existen.
+    """
+    
+    client = weaviate.connect_to_custom(
+        http_host="localhost",
+        http_port=8080,
+        http_secure=False,
+        grpc_host="localhost",
+        grpc_port=50051,
+        grpc_secure=False,
+        headers={
+            "X-OpenAI-Api-Key": os.getenv("OPENAI_APIKEY", "")
+        }
+    )
+    client.connect()
+
+    classesVec = [
+        {
+            "class": "Imagenes",
+            "description": "Clase para almacenar vectores de imágenes",
+            "properties": [
+                {"name": "title", "dataType": ["text"]},
+                {"name": "doc_id", "dataType": ["text"]},
+                {"name": "file_location", "dataType": ["text"]},
+                {"name": "analysis", "dataType": ["text"]},
+                {"name": "content", "dataType": ["text"]}
+            ]
+        },
+        {
+            "class": "Textos",
+            "description": "Clase para almacenar vectores de textos",
+            "properties": [
+                {"name": "title", "dataType": ["text"]},
+                {"name": "author", "dataType": ["text"]},
+                {"name": "content", "dataType": ["text"]},
+                {"name": "analysis", "dataType": ["text"]},
+                {"name": "file_location", "dataType": ["text"]}
+            ]
+        },
+        {
+            "class": "Audio",
+            "description": "Clase para almacenar vectores de audio",
+            "properties": [
+                {"name": "title", "dataType": ["text"]},
+                {"name": "doc_id", "dataType": ["text"]},
+                {"name": "file_location", "dataType": ["text"]},
+                {"name": "analysis", "dataType": ["text"]},
+                {"name": "content", "dataType": ["text"]}
+            ]
+        },
+        {
+            "class": "Video",
+            "description": "Clase para almacenar vectores de video",
+            "properties": [
+                {"name": "title", "dataType": ["text"]},
+                {"name": "doc_id", "dataType": ["text"]},
+                {"name": "file_location", "dataType": ["text"]},
+                {"name": "analysis", "dataType": ["text"]},
+                {"name": "content", "dataType": ["text"]}
+            ]
+        }
+    ]
+
+    col_configs = client.collections.list_all() 
+    existing_classes = set(col_configs.keys())
+
+    for cls in classesVec:
+        class_name = cls["class"]
+        if class_name in existing_classes:
+            print(f'La clase "{class_name}" ya existe en Weaviate.')
+        else:
+            client.collections.create_from_dict(cls)
+            print(f'La clase "{class_name}" ha sido creada en Weaviate.')
+
+    client.close()
 
 def main():
     """Run administrative tasks."""
@@ -167,12 +244,11 @@ def main():
             "available on your PYTHONPATH environment variable? Did you "
             "forget to activate a virtual environment?"
         ) from exc
-    
-    # Crear directorios de uploads antes de ejecutar
+
     ensure_upload_directories()
     seed_node_types()
+    seed_weaviate_schema()
     execute_from_command_line(sys.argv)
-
 
 if __name__ == '__main__':
     main()

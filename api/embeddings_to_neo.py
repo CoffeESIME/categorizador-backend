@@ -28,7 +28,7 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
         "tags",
         "topics",
         "style",
-        "file_location"
+        "file_location","analysis", "content"
     ]
     
     # Primero, hagamos un debug para ver qué estructura tienen los datos
