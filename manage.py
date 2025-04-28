@@ -7,6 +7,7 @@ import uuid
 from neo4j import GraphDatabase
 from weaviate.connect import ConnectionParams
 import weaviate 
+
 driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "s3cr3t2012"))
 
 def seed_node_types():
@@ -193,7 +194,8 @@ def seed_weaviate_schema():
                 {"name": "author", "dataType": ["text"]},
                 {"name": "content", "dataType": ["text"]},
                 {"name": "analysis", "dataType": ["text"]},
-                {"name": "file_location", "dataType": ["text"]}
+                {"name": "file_location", "dataType": ["text"]},
+                {"name": "doc_id", "dataType": ["text"]}
             ]
         },
         {
@@ -220,17 +222,34 @@ def seed_weaviate_schema():
         }
     ]
 
-    col_configs = client.collections.list_all() 
-    existing_classes = set(col_configs.keys())
-
-    for cls in classesVec:
-        class_name = cls["class"]
-        if class_name in existing_classes:
-            print(f'La clase "{class_name}" ya existe en Weaviate.')
-        else:
-            client.collections.create_from_dict(cls)
-            print(f'La clase "{class_name}" ha sido creada en Weaviate.')
-
+    # Obtener todas las colecciones existentes
+    try:
+        existing_collections = client.collections.list_all()
+        existing_names = set(existing_collections.keys())
+        
+        for cls in classesVec:
+            class_name = cls["class"]
+            if class_name in existing_names:
+                print(f'La colección "{class_name}" ya existe en Weaviate.')
+            else:
+                # Crear la colección si no existe
+                properties = []
+                for prop in cls["properties"]:
+                    properties.append({
+                        "name": prop["name"],
+                        "dataType": prop["dataType"][0]
+                    })
+                
+                # Crear la colección
+                collection = client.collections.create(
+                    name=class_name,
+                    description=cls["description"],
+                    properties=properties
+                )
+                print(f'La colección "{class_name}" ha sido creada en Weaviate.')
+    except Exception as e:
+        print(f"Error al configurar el esquema de Weaviate: {str(e)}")
+    
     client.close()
 
 def main():

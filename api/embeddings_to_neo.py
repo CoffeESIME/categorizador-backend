@@ -1,6 +1,22 @@
 # embeddings_to_neo4j.py
 from .neo4j_client import driver
 import uuid
+import os
+import weaviate
+
+# Conexión personalizada a Weaviate
+client = weaviate.connect_to_custom(
+    http_host="localhost",
+    http_port=8080,
+    http_secure=False,
+    grpc_host="localhost",
+    grpc_port=50051,
+    grpc_secure=False,
+    headers={
+        "X-OpenAI-Api-Key": os.getenv("OPENAI_APIKEY", "")
+    }
+)
+client.connect()
 def close():
     driver.close()
 
@@ -16,6 +32,10 @@ def flatten_list_recursive(lst):
     return flat
 
 def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str = "UnconnectedDoc"):
+    """
+    Almacena un nodo en Neo4j sin el embedding (solo los metadatos).
+    El embedding se guardará en Weaviate por separado.
+    """
     allowed_keys = [
         "author",
         "title",
@@ -46,16 +66,7 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
     # Preparar las propiedades validando cada una
     params = {"doc_id": doc_id, "id": str(uuid.uuid4())}
     
-    # Tratar el embedding por separado (asegurarse de que es una lista plana)
-    if isinstance(embedding, list):
-        if any(isinstance(elem, list) for elem in embedding):
-            # Si embedding contiene listas, aplanarlo
-            print("WARNING: Embedding contains nested lists, flattening...")
-            params["embedding"] = flatten_list_recursive(embedding)
-        else:
-            params["embedding"] = embedding
-    
-    # Procesar el resto de propiedades una por una
+    # Procesar las propiedades una por una
     for key in allowed_keys:
         if key in meta:
             value = meta[key]
@@ -92,6 +103,9 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
         with driver.session() as session:
             result = session.run(cypher, params)
             record = result.single()
+            # También guardar en Weaviate si hay embedding
+            if embedding and len(embedding) > 0:
+                store_embedding_weaviate(doc_id, embedding, meta)
             return record["n"] if record else None
     except Exception as e:
         print(f"ERROR with Neo4j: {str(e)}")
@@ -101,8 +115,101 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
             print(f"Testing {key}...")
             test_params = {"test_value": value}
             try:
-                session.run("RETURN $test_value", test_params)
+                with driver.session() as session:
+                    session.run("RETURN $test_value", test_params)
                 print(f"  {key} is OK")
             except Exception as param_error:
                 print(f"  ERROR with {key}: {str(param_error)}")
         raise  # Re-lanzar la excepción original
+      
+    
+def store_embedding_weaviate(doc_id: str, embedding: list[float], meta: dict):
+    """
+    Almacena el embedding junto con los metadatos en Weaviate.
+    Selecciona la colección apropiada según el tipo de contenido.
+    """
+    # Determinar la colección de Weaviate según el tipo de contenido
+    content_type = meta.get("content_type", "").lower()
+    
+    if content_type in ["image", "imagen", "photo", "foto"]:
+        collection_name = "Imagenes"
+    elif content_type in ["text", "texto", "article", "artículo", "book", "libro"]:
+        collection_name = "Textos"
+    elif content_type in ["audio", "sound", "música", "music"]:
+        collection_name = "Audio"
+    elif content_type in ["video", "película", "movie"]:
+        collection_name = "Video"
+    else:
+        # Colección por defecto
+        collection_name = "Textos"
+    
+    # Extraer propiedades relevantes del diccionario meta
+    data_object = {
+        "title": meta.get("title", "Sin título"),
+        "doc_id": doc_id,
+        "file_location": meta.get("file_location", ""),
+        "analysis": meta.get("analysis", ""),
+        "content": meta.get("content", "")
+    }
+    
+    # Si tenemos autor, añadirlo al objeto
+    if meta.get("author"):
+        data_object["author"] = meta.get("author")
+    
+    # Crear colección si no existe
+    try:
+        collection = client.collections.get(collection_name)
+    except Exception:
+        print(f"La colección {collection_name} no existe, verificando esquema")
+        return None
+    
+    try:
+        # Guarda el objeto en Weaviate junto con su vector (embedding)
+        result = client.collections.get(collection_name).data.insert(
+            properties=data_object,
+            vector=embedding
+        )
+        print(f"Objeto guardado en colección {collection_name} con ID: {result}")
+        return result
+    except Exception as e:
+        print(f"Error al guardar embedding en Weaviate: {str(e)}")
+        raise
+
+def store_chunk_in_weaviate(client, chunk_text: str, embedding: list[float], original_doc_id: str, chunk_metadata: dict):
+    """
+    Almacena un chunk de texto y su embedding en Weaviate.
+    Asocia el chunk con el ID del documento original.
+    """
+    collection_name = "PdfChunks" # O la colección que decidas para chunks de texto/PDF
+
+    # Asegúrate de que la colección exista con un esquema apropiado
+    # Ejemplo de esquema mínimo:
+    # properties = [
+    #     weaviate.classes.config.Property(name="text_chunk", data_type=weaviate.classes.config.DataType.TEXT),
+    #     weaviate.classes.config.Property(name="original_doc_id", data_type=weaviate.classes.config.DataType.TEXT),
+    #     weaviate.classes.config.Property(name="chunk_sequence", data_type=weaviate.classes.config.DataType.INT),
+    #     weaviate.classes.config.Property(name="page_number", data_type=weaviate.classes.config.DataType.INT),
+    # ]
+    # client.collections.create(name=collection_name, properties=...)
+
+    data_object = {
+        "text_chunk": chunk_text,
+        "original_doc_id": original_doc_id,
+        "chunk_sequence": chunk_metadata.get("chunk_sequence", -1),
+        "page_number": chunk_metadata.get("page_number", -1),
+        # Puedes añadir más metadatos del chunk si los tienes
+    }
+
+    try:
+        collection = client.collections.get(collection_name)
+        uuid = collection.data.insert(
+            properties=data_object,
+            vector=embedding
+        )
+        print(f"Chunk de {original_doc_id} guardado en Weaviate ({collection_name}) con UUID: {uuid}")
+        return uuid
+    except Exception as e:
+        print(f"Error guardando chunk en Weaviate para {original_doc_id}: {e}")
+        # Considera re-lanzar o manejar el error de forma más robusta
+        # raise e
+        return None

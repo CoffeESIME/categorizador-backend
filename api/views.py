@@ -7,12 +7,16 @@ from .serializers import UploadedFileSerializer
 import os
 import json
 from django.conf import settings
-from rest_framework import status
 from .models import UploadedFile
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 import uuid
 from .neo4j_client import driver
+import torch, clip
+from PIL import Image
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from .pdf_embeddings import embed_pdf_and_store
+from .weaviate_client import CLIENT  
 
 class MultiFileUploadView(APIView):
     parser_classes = (MultiPartParser, FormParser)
@@ -23,15 +27,23 @@ class MultiFileUploadView(APIView):
         
         uploaded_files = []
         for file in files:
+            # Reemplazar espacios por guiones bajos en el nombre original
+            original_name = file.name
+            sanitized_name = original_name.replace(" ", "_")
+            
+            # Asignar el nombre normalizado al archivo
+            file.name = sanitized_name
+            
             instance = UploadedFile.objects.create(
                 file=file,
                 file_type=file.content_type,
                 size=file.size,
-                status='pending'
+                status='pending',
+                original_name=sanitized_name  # Guardar el nombre normalizado
             )
             uploaded_files.append({
                 "id": instance.id,
-                "original_name": instance.original_name,
+                "original_name": sanitized_name,  # Usar el nombre normalizado
                 "location": instance.file.url,
                 "status": 'uploaded',
                 "file_type": file.content_type
@@ -46,104 +58,205 @@ class PendingFilesView(APIView):
         pending_files = UploadedFile.objects.filter(status='pending')
         serializer = UploadedFileSerializer(pending_files, many=True)
         return Response({"files": serializer.data}, status=status.HTTP_200_OK)
+
 class MetadataProcessingView(APIView):
     """
     Recibe una lista de objetos 'FileMetadata' y los procesa.
-    Campos importantes en el JSON de entrada:
-      - id: string (identificador del archivo, coincide con 'UploadedFile.file.name' o PK)
-      - content, analysis, description ...
-      - multilingual: boolean (si true, usar content_es, content_en, etc.)
-      - chunks / vectorOfVectors: boolean (si true, hacer chunking)
-      - deletedFile: boolean (si true, eliminar el archivo tras procesar)
-      - ... (todos los campos que quieras)
+    Se admite un campo opcional "embedding_type" en cada objeto, que puede ser:
+      - "image": Para obtener embedding de imagen usando CLIP.
+      - "ocr": Para procesar texto extraído de imagen (OCR).
+      - "text": Para embeddings de texto (contenido, análisis, descripción).
+      - "audio": Para embeddings de audio.
+      - "video": Para embeddings de video.
+      - "graph": Para embeddings de grafos.
+    Si no se especifica, se asume "text".
+    
+    Los embeddings se almacenarán en Weaviate según su tipo,
+    mientras que los metadatos se guardarán en Neo4j como nodos UnconnectedDoc.
     """
 
     def post(self, request):
         try:
             file_metadata_list = request.data
             if not isinstance(file_metadata_list, list):
-                return Response({"error": "La entrada debe ser un array de objetos."},
-                                status=status.HTTP_400_BAD_REQUEST)
-            embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                return Response(
+                    {"error": "La entrada debe ser un array de objetos."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             results = []
             for meta in file_metadata_list:
-                file_id = meta.get("id") 
+                file_id = meta.get("id")
+                print('data', file_id)
                 if not file_id:
                     results.append({"error": "No se recibió 'id' en los metadatos"})
                     continue
                 try:
                     uploaded_file = UploadedFile.objects.get(original_name=file_id)
-                    
-                    # Agregar la ubicación del archivo a los metadatos
+                    # Agregar la ubicación del archivo a los metadatos (si existe)
                     if uploaded_file.file_location:
                         meta["file_location"] = uploaded_file.file_location
-                        
                 except UploadedFile.DoesNotExist:
                     results.append({
                         "id": file_id,
                         "error": "El archivo no existe en la base de datos"
                     })
                     continue
-                texts_for_embedding = []
-                if meta.get("multilingual"):
-                    for lang_code in meta.get("languages", []):
-                        key = f"content_{lang_code}"
-                        if key in meta and meta[key]:
-                            texts_for_embedding.append(meta[key])
-                else:
-                    if meta.get("content"):
-                        texts_for_embedding.append(meta["content"])
-                    if meta.get("analysis"):
-                        texts_for_embedding.append(meta["analysis"])
-                    if meta.get("description"):
-                        texts_for_embedding.append(meta["description"])
+                # Establecer content_type basado en embedding_type si no está definido
+                embedding_type = meta.get("embedding_type", "text").lower()
+                meta.setdefault("content_type", embedding_type)
 
-                do_chunking = meta.get("chunks") or meta.get("vectorOfVectors") or False
-                chunked_texts = []
-                if do_chunking:
-                    splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=1000,
-                        chunk_overlap=100
-                    )
-                    for txt in texts_for_embedding:
-                        sub_docs = splitter.split_text(txt)
-                        chunked_texts.extend(sub_docs)
-                else:
-                    chunked_texts = texts_for_embedding
-                embeddings = []
-            
-                if embedding_model:
-                    embeddings = embedding_model.embed_documents(chunked_texts)
-                    doc_id = meta.get("id")
-                    node = store_embedding(
-                        doc_id=doc_id,
-                        embedding=embeddings,
-                        label="UnconnectedDoc",
-                        meta=meta
-                    )
-                                        
-                    uploaded_file.status = "vectorized"
-                    uploaded_file.save()
+                embedding = []
+                uploads_dir = os.path.join('uploads', meta.get("file_location"))
+                print("embedding", embedding_type)
+                if embedding_type == "pdf":
+                    pdf_path = os.path.join("uploads", meta["file_location"])
+                    try:
+                        embeddings_created, uuids = embed_pdf_and_store(
+                            pdf_path=pdf_path,
+                            original_doc_id=file_id,
+                            client=CLIENT,
+                        )
+                        # guardamos solo un placeholder en Neo4j para el doc padre
+                        store_embedding(
+                            doc_id=file_id,
+                            embedding=[],          # vacío ➜ sólo metadatos
+                            label="UnconnectedDoc",
+                            meta=meta,
+                        )
+                    except Exception as pdf_err:
+                        results.append({"id": file_id, "error": str(pdf_err)})
+                        continue
+                                    # P
+                                    
+                                    # odrías acumular errores aquí si necesitas reportarlos
 
-                    print(node)
+                if embedding_type == "image":
+                    # Usar CLIP para imágenes
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    model_clip, preprocess = clip.load("ViT-B/32", device=device)
+                    image_path = uploads_dir
+                    if not image_path or not os.path.exists(image_path):
+                        results.append({
+                            "id": file_id,
+                            "error": "No se encontró la imagen en 'file_location'"
+                        })
+                        continue
+                    image = Image.open(image_path)
+                    image_input = preprocess(image).unsqueeze(0).to(device)
+                    with torch.no_grad():
+                        image_features = model_clip.encode_image(image_input)
+                    image_features /= image_features.norm(dim=-1, keepdim=True)
+                    embedding = image_features.cpu().numpy()[0].tolist()
+
+                elif embedding_type == "ocr":
+                    # Usar texto extraído de OCR (se espera que esté en "ocr_text")
+                    ocr_text = meta.get("ocr_text", "")
+                    if ocr_text:
+                        meta["content"] = ocr_text  # Guardar el texto OCR como contenido
+                        embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                        embedding = embedding_model.embed_documents([ocr_text])[0]
+                    else:
+                        results.append({
+                            "id": file_id,
+                            "error": "No se encontró 'ocr_text' para procesamiento OCR"
+                        })
+                        continue
+
+                elif embedding_type == "text":
+                    # Procesar textos: content, analysis, description, etc.
+                    texts_for_embedding = []
+                    if meta.get("multilingual"):
+                        for lang_code in meta.get("languages", []):
+                            key = f"content_{lang_code}"
+                            if key in meta and meta[key]:
+                                texts_for_embedding.append(meta[key])
+                    else:
+                        if meta.get("content"):
+                            texts_for_embedding.append(meta["content"])
+                        if meta.get("analysis"):
+                            texts_for_embedding.append(meta["analysis"])
+                        if meta.get("description"):
+                            texts_for_embedding.append(meta["description"])
+                    combined_text = " ".join(texts_for_embedding)
+                    if combined_text:
+                        embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                        embedding = embedding_model.embed_documents([combined_text])[0]
+
+                # elif embedding_type == "audio":
+                #     # Ejemplo: usar un modelo de audio embeddings (reemplaza por tu implementación)
+                #     from some_audio_embedding_module import AudioEmbeddings
+                #     audio_path = meta.get("file_location")
+                #     audio_model = AudioEmbeddings(model="your-audio-model")
+                #     embedding = audio_model.embed(audio_path)
+
+                # elif embedding_type == "video":
+                #     # Ejemplo: extraer y combinar embeddings de frames clave de un video
+                #     from some_video_embedding_module import VideoEmbeddings
+                #     video_path = meta.get("file_location")
+                #     video_model = VideoEmbeddings(model="your-video-model")
+                #     embedding = video_model.embed(video_path)
+
+                # elif embedding_type == "graph":
+                #     # Ejemplo: procesar datos de grafo
+                #     from some_graph_embedding_module import GraphEmbeddings
+                #     graph_data = meta.get("graph_data")
+                #     graph_model = GraphEmbeddings(model="your-graph-model")
+                #     embedding = graph_model.embed(graph_data)
+
+                else:
+                    # Fallback: tratar el contenido como texto
+                    texts_for_embedding = []
+                    if meta.get("multilingual"):
+                        for lang_code in meta.get("languages", []):
+                            key = f"content_{lang_code}"
+                            if key in meta and meta[key]:
+                                texts_for_embedding.append(meta[key])
+                    else:
+                        if meta.get("content"):
+                            texts_for_embedding.append(meta["content"])
+                        if meta.get("analysis"):
+                            texts_for_embedding.append(meta["analysis"])
+                        if meta.get("description"):
+                            texts_for_embedding.append(meta["description"])
+                    combined_text = " ".join(texts_for_embedding)
+                    if combined_text:
+                        embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                        embedding = embedding_model.embed_documents([combined_text])[0]
+
+                # Almacenar el nodo en Neo4j y el embedding en Weaviate
+                doc_id = meta.get("id")
+                store_embedding(
+                    doc_id=doc_id,
+                    embedding=embedding,
+                    label="UnconnectedDoc",
+                    meta=meta
+                )
+
+                uploaded_file.status = "vectorized"
+                uploaded_file.save()
+
+                # Guardar metadatos en un archivo JSON (opcional)
                 json_filename = f"metadata_{uploaded_file.original_name}.json"
                 json_path = os.path.join(settings.MEDIA_ROOT, json_filename)
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(meta, f, ensure_ascii=False, indent=2)
 
+                # Eliminar el archivo si se indica
                 if meta.get("deletedFile") is True:
                     file_path = uploaded_file.file.path
                     if os.path.exists(file_path):
                         os.remove(file_path)
                     uploaded_file.status = "deleted"
                     uploaded_file.save()
+
                 result_item = {
                     "id": file_id,
                     "filename": uploaded_file.file.name,
                     "file_location": uploaded_file.file_location,
                     "status": uploaded_file.status,
-                    "num_chunks": len(chunked_texts),
-                    "embeddings_created": len(embeddings) if embeddings else 0
+                    "embedding_type": embedding_type,
+                    "embeddings_created": 1 if embedding else 0
                 }
                 results.append(result_item)
 
@@ -154,6 +267,7 @@ class MetadataProcessingView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 class UnconnectedNodesView(APIView):
     """
     Retorna nodos que no tienen ninguna relación (no conectados),
@@ -984,6 +1098,7 @@ class TextMetadataProcessingView(APIView):
     
     POST: Recibe un array de metadatos de textos y crea archivos JSON en la carpeta apropiada,
     genera embeddings y crea nodos UnconnectedDoc en Neo4j para cada texto.
+    Los embeddings se almacenan en Weaviate, mientras que los metadatos se guardan en Neo4j.
     
     Parámetros esperados:
     Array de objetos con los metadatos obtenidos del endpoint TextProcessView, incluyendo:
@@ -1037,6 +1152,10 @@ class TextMetadataProcessingView(APIView):
                 metadata["id"] = doc_id
                 metadata["doc_id"] = doc_id
                 
+                # Establecer content_type si no está definido
+                if not metadata.get("content_type"):
+                    metadata["content_type"] = "text"
+                
                 # Asegurar que los campos requeridos estén presentes
                 required_fields = ["author", "title", "work", "tags", "sentiment_word", 
                                   "sentiment_value", "analysis", "content"]
@@ -1066,10 +1185,10 @@ class TextMetadataProcessingView(APIView):
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(metadata, f, ensure_ascii=False, indent=2)
                 
-                # Crear nodo en Neo4j
+                # Crear nodo en Neo4j y guardar embedding en Weaviate
                 node = store_embedding(
                     doc_id=doc_id,
-                    embedding=embeddings,
+                    embedding=embeddings[0] if embeddings else [],
                     label="UnconnectedDoc",
                     meta=metadata
                 )
