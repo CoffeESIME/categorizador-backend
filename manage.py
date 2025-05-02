@@ -3,10 +3,10 @@
 import os
 import sys
 import json
-import uuid
 from neo4j import GraphDatabase
 from weaviate.connect import ConnectionParams
-import weaviate 
+import weaviate
+import weaviate.classes.config as wc    
 
 driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "s3cr3t2012"))
 
@@ -155,102 +155,98 @@ def ensure_upload_directories():
     
     print("✅ Directorios de uploads creados correctamente.")
 
-def seed_weaviate_schema():
-    """
-    Conecta a Weaviate y crea las clases (por ejemplo, Imagenes, Textos, Audio, Video)
-    si no existen.
-    """
-    
+def seed_weaviate_schema() -> None:
+    """Crea colecciones si no existen, incluida 'Imagenes' con 3 vectores."""
     client = weaviate.connect_to_custom(
-        http_host="localhost",
-        http_port=8080,
-        http_secure=False,
-        grpc_host="localhost",
-        grpc_port=50051,
-        grpc_secure=False,
-        headers={
-            "X-OpenAI-Api-Key": os.getenv("OPENAI_APIKEY", "")
-        }
+        http_host="localhost", http_port=8080, http_secure=False,
+        grpc_host="localhost", grpc_port=50051, grpc_secure=False,
+        headers={"X-OpenAI-Api-Key": os.getenv("OPENAI_APIKEY", "")}
     )
     client.connect()
 
-    classesVec = [
-        {
-            "class": "Imagenes",
-            "description": "Clase para almacenar vectores de imágenes",
-            "properties": [
-                {"name": "title", "dataType": ["text"]},
-                {"name": "doc_id", "dataType": ["text"]},
-                {"name": "file_location", "dataType": ["text"]},
-                {"name": "analysis", "dataType": ["text"]},
-                {"name": "content", "dataType": ["text"]}
-            ]
-        },
-        {
-            "class": "Textos",
-            "description": "Clase para almacenar vectores de textos",
-            "properties": [
-                {"name": "title", "dataType": ["text"]},
-                {"name": "author", "dataType": ["text"]},
-                {"name": "content", "dataType": ["text"]},
-                {"name": "analysis", "dataType": ["text"]},
-                {"name": "file_location", "dataType": ["text"]},
-                {"name": "doc_id", "dataType": ["text"]}
-            ]
-        },
-        {
-            "class": "Audio",
-            "description": "Clase para almacenar vectores de audio",
-            "properties": [
-                {"name": "title", "dataType": ["text"]},
-                {"name": "doc_id", "dataType": ["text"]},
-                {"name": "file_location", "dataType": ["text"]},
-                {"name": "analysis", "dataType": ["text"]},
-                {"name": "content", "dataType": ["text"]}
-            ]
-        },
-        {
-            "class": "Video",
-            "description": "Clase para almacenar vectores de video",
-            "properties": [
-                {"name": "title", "dataType": ["text"]},
-                {"name": "doc_id", "dataType": ["text"]},
-                {"name": "file_location", "dataType": ["text"]},
-                {"name": "analysis", "dataType": ["text"]},
-                {"name": "content", "dataType": ["text"]}
-            ]
-        }
+    # ---------- DEFINICIÓN DE COLECCIONES --------------------------
+    collections_cfg = [
+
+        # IMAGENES ────────────
+        dict(
+            name        ="Imagenes",
+            description ="Imágenes con vectores CLIP, OCR y descripción",
+            vectorizer_config=[
+                wc.Configure.NamedVectors.none(name="vector_clip"),
+                wc.Configure.NamedVectors.none(name="vector_ocr"),
+                wc.Configure.NamedVectors.none(name="vector_des"),
+            ],
+            properties=[
+                wc.Property(name="title",         data_type=wc.DataType.TEXT),
+                wc.Property(name="doc_id",        data_type=wc.DataType.TEXT),
+                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
+                wc.Property(name="analysis",      data_type=wc.DataType.TEXT),
+                wc.Property(name="content",       data_type=wc.DataType.TEXT),
+            ],
+        ),
+
+        # TEXTOS ──────────────
+        dict(
+            name        ="Textos",
+            description ="Documentos de texto (vector BYO)",
+            vectorizer_config=wc.Configure.Vectorizer.none(),
+            properties=[
+                wc.Property(name="title",         data_type=wc.DataType.TEXT),
+                wc.Property(name="author",        data_type=wc.DataType.TEXT),
+                wc.Property(name="content",       data_type=wc.DataType.TEXT),
+                wc.Property(name="analysis",      data_type=wc.DataType.TEXT),
+                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
+                wc.Property(name="doc_id",        data_type=wc.DataType.TEXT),
+            ],
+        ),
+
+        # AUDIO ───────────────
+        dict(
+            name        ="Audio",
+            description ="Archivos de audio",
+            vectorizer_config=wc.Configure.Vectorizer.none(),
+            properties=[
+                wc.Property(name="title",         data_type=wc.DataType.TEXT),
+                wc.Property(name="doc_id",        data_type=wc.DataType.TEXT),
+                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
+                wc.Property(name="analysis",      data_type=wc.DataType.TEXT),
+                wc.Property(name="content",       data_type=wc.DataType.TEXT),
+            ],
+        ),
+
+        # VIDEO ───────────────
+        dict(
+            name        ="Video",
+            description ="Archivos de video",
+            vectorizer_config=wc.Configure.Vectorizer.none(),
+            properties=[
+                wc.Property(name="title",         data_type=wc.DataType.TEXT),
+                wc.Property(name="doc_id",        data_type=wc.DataType.TEXT),
+                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
+                wc.Property(name="analysis",      data_type=wc.DataType.TEXT),
+                wc.Property(name="content",       data_type=wc.DataType.TEXT),
+            ],
+        ),
     ]
 
-    # Obtener todas las colecciones existentes
-    try:
-        existing_collections = client.collections.list_all()
-        existing_names = set(existing_collections.keys())
-        
-        for cls in classesVec:
-            class_name = cls["class"]
-            if class_name in existing_names:
-                print(f'La colección "{class_name}" ya existe en Weaviate.')
-            else:
-                # Crear la colección si no existe
-                properties = []
-                for prop in cls["properties"]:
-                    properties.append({
-                        "name": prop["name"],
-                        "dataType": prop["dataType"][0]
-                    })
-                
-                # Crear la colección
-                collection = client.collections.create(
-                    name=class_name,
-                    description=cls["description"],
-                    properties=properties
-                )
-                print(f'La colección "{class_name}" ha sido creada en Weaviate.')
-    except Exception as e:
-        print(f"Error al configurar el esquema de Weaviate: {str(e)}")
-    
+    # --------- CREAR SI NO EXISTE ---------------------------------
+    existing = set(client.collections.list_all().keys())
+
+    for cfg in collections_cfg:
+        if cfg["name"] in existing:
+            print(f'✔ "{cfg["name"]}" ya existe.')
+            continue
+
+        client.collections.create(
+            name              = cfg["name"],
+            description       = cfg["description"],
+            properties        = cfg["properties"],
+            vectorizer_config = cfg["vectorizer_config"],
+        )
+        print(f'✅ Colección "{cfg["name"]}" creada.')
+
     client.close()
+
 
 def main():
     """Run administrative tasks."""

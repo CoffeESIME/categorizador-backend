@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import ConnectNodesView, ConnectUnconnectedNodeView, DeleteNodeConnectionView, GraphView, MultiFileUploadView, NodeConnectionsView, NodeCreationView, NodeTypesView, PendingFilesView, MetadataProcessingView, TextMetadataProcessingView, TextProcessView, UnconnectedNodesView, UpdateNodeView, NodesByTypeView
 from .llm_views import LLMProcessView
-
+from .rag_views import MultiModalSearchView
 urlpatterns = [
     path('files/upload', MultiFileUploadView.as_view(), name='file_upload'),
     path('files/', PendingFilesView.as_view(), name='pending_files'),
@@ -20,5 +20,6 @@ urlpatterns = [
     path('node-types', NodeTypesView.as_view(), name="node_types"),
     path('nodes/connect-unconnected', ConnectUnconnectedNodeView.as_view(), name='connect_unconnected_node'),
     path('content/process', TextProcessView.as_view(), name='content_process'),
-    path('content/metadata/save', TextMetadataProcessingView.as_view(), name='content_metadata_save')
+    path('content/metadata/save', TextMetadataProcessingView.as_view(), name='content_metadata_save'),
+    path("search", MultiModalSearchView.as_view(), name="multimodal-search"),
 ]

@@ -180,24 +180,13 @@ def store_chunk_in_weaviate(client, chunk_text: str, embedding: list[float], ori
     Almacena un chunk de texto y su embedding en Weaviate.
     Asocia el chunk con el ID del documento original.
     """
-    collection_name = "PdfChunks" # O la colección que decidas para chunks de texto/PDF
-
-    # Asegúrate de que la colección exista con un esquema apropiado
-    # Ejemplo de esquema mínimo:
-    # properties = [
-    #     weaviate.classes.config.Property(name="text_chunk", data_type=weaviate.classes.config.DataType.TEXT),
-    #     weaviate.classes.config.Property(name="original_doc_id", data_type=weaviate.classes.config.DataType.TEXT),
-    #     weaviate.classes.config.Property(name="chunk_sequence", data_type=weaviate.classes.config.DataType.INT),
-    #     weaviate.classes.config.Property(name="page_number", data_type=weaviate.classes.config.DataType.INT),
-    # ]
-    # client.collections.create(name=collection_name, properties=...)
+    collection_name = "PdfChunks"
 
     data_object = {
         "text_chunk": chunk_text,
         "original_doc_id": original_doc_id,
         "chunk_sequence": chunk_metadata.get("chunk_sequence", -1),
         "page_number": chunk_metadata.get("page_number", -1),
-        # Puedes añadir más metadatos del chunk si los tienes
     }
 
     try:
@@ -210,6 +199,46 @@ def store_chunk_in_weaviate(client, chunk_text: str, embedding: list[float], ori
         return uuid
     except Exception as e:
         print(f"Error guardando chunk en Weaviate para {original_doc_id}: {e}")
-        # Considera re-lanzar o manejar el error de forma más robusta
-        # raise e
         return None
+def guardar_imagen_en_weaviate(
+    client,
+    *,
+    meta: dict,
+    vec_clip: list[float] | None = None,   # vector visual
+    vec_ocr:  list[float] | None = None,   # vector del OCR
+    vec_desc: list[float] | None = None,   # vector de la descripción
+) -> str | None:
+    """
+    Inserta un objeto en la colección 'Imagenes' con hasta tres
+    named-vectors (vector_clip, vector_ocr, vector_des).
+
+    — al menos uno de los tres debe estar presente —
+    """
+    if not any([vec_clip, vec_ocr, vec_desc]):
+        raise ValueError("Proporciona al menos un vector")
+
+    # 1. Limpia metadatos vacíos
+    propiedades = {k: v for k, v in meta.items() if v is not None}
+
+    # 2. Construye el diccionario de vectores con los que existan
+    vectores = {}
+    if vec_clip is not None:
+        vectores["vector_clip"] = vec_clip
+    if vec_ocr is not None:
+        vectores["vector_ocr"] = vec_ocr
+    if vec_desc is not None:
+        vectores["vector_des"] = vec_desc
+
+    # 3. Inserta en Weaviate
+    imagenes = client.collections.get("Imagenes")
+    uuid = imagenes.data.insert(properties=propiedades, vector=vectores)
+
+    print(f"[OK] guardado {meta.get('doc_id')} · UUID: {uuid}")
+    return uuid
+
+def limpiar_meta(meta: dict) -> dict:
+    """Devuelve un dict sin la clave prohibida 'id'."""
+    meta = meta.copy()
+    if "id" in meta:
+        meta["doc_id"] = meta.pop("id")   # o el nombre que prefieras
+    return {k: v for k, v in meta.items() if v is not None}
