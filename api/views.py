@@ -425,14 +425,68 @@ class GraphView(APIView):
                 query_nodes += " RETURN n, labels(n) as labels LIMIT $limit"
                 result = session.run(query_nodes, nodeLabels=node_labels, limit=limit)
 
+# ... (dentro de GraphView) ...
             for record in result:
-                node = dict(record.get("n"))
+                node_data = record.get("n")
+                node = {}
+                if node_data:
+                    for key, value in node_data.items():
+                        # Convertir tipos de fecha/hora de Neo4j a string
+                        if hasattr(value, 'isoformat'): # Verifica si es un objeto de fecha/hora compatible
+                            node[key] = value.isoformat()
+                        else:
+                            node[key] = value
+                
                 # Usamos 'doc_id' si existe, o 'id' como respaldo para identificar el nodo
                 node_id = node.get("doc_id") or node.get("id")
-                node["nodeId"] = node_id
+                node["nodeId"] = node_id # Asegurarse de que nodeId se asigna después de procesar las propiedades
                 node["labels"] = record.get("labels")
                 nodes.append(node)
 
+            # Obtener las relaciones (edges) entre los nodos recuperados
+            node_ids = [node["nodeId"] for node in nodes if node.get("nodeId")]
+            if node_ids:
+                query_edges = """
+                    MATCH (a)-[r]->(b)
+                    WHERE (a.doc_id IN $nodeIds OR a.id IN $nodeIds)
+                      AND (b.doc_id IN $nodeIds OR b.id IN $nodeIds)
+                """
+                if relationship_type:
+                    query_edges += " AND type(r) = $relationshipType "
+                query_edges += " RETURN a, b, type(r) as relation"
+                
+                params = {"nodeIds": node_ids}
+                if relationship_type:
+                    params["relationshipType"] = relationship_type
+                
+                edge_result = session.run(query_edges, **params)
+                for record in edge_result:
+                    a_data = record.get("a")
+                    b_data = record.get("b")
+                    
+                    a_node = {}
+                    if a_data:
+                        for key, value in a_data.items():
+                            if hasattr(value, 'isoformat'):
+                                a_node[key] = value.isoformat()
+                            else:
+                                a_node[key] = value
+                                
+                    b_node = {}
+                    if b_data:
+                        for key, value in b_data.items():
+                            if hasattr(value, 'isoformat'):
+                                b_node[key] = value.isoformat()
+                            else:
+                                b_node[key] = value
+                    
+                    source = a_node.get("doc_id") or a_node.get("id")
+                    target = b_node.get("doc_id") or b_node.get("id")
+                    edges.append({
+                        "source": source,
+                        "target": target,
+                        "relation": record.get("relation")
+                    })
             # Obtener las relaciones (edges) entre los nodos recuperados
             node_ids = [node["nodeId"] for node in nodes if node.get("nodeId")]
             if node_ids:
