@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import ConnectNodesView, ConnectUnconnectedNodeView, DeleteNodeConnectionView, GraphView, MultiFileUploadView, NodeConnectionsView, NodeCreationView, NodeTypesView, PendingFilesView, MetadataProcessingView, TextMetadataProcessingView, TextProcessView, UnconnectedNodesView, UpdateNodeView, NodesByTypeView
+from .views import AdvancedGraphSearchView, ConnectNodesView, ConnectUnconnectedNodeView, DeleteNodeConnectionView, GraphView, MultiFileUploadView, NodeConnectionsView, NodeCreationView, NodeTypesView, PendingFilesView, MetadataProcessingView, TextMetadataProcessingView, TextProcessView, UnconnectedNodesView, UpdateNodeView, NodesByTypeView
 from .llm_views import LLMProcessView
 from .rag_views import MultiModalSearchView
 urlpatterns = [
@@ -15,7 +15,8 @@ urlpatterns = [
     path('nodes/<str:nodeId>/connections-actions', UpdateNodeView.as_view(), name='update_node_connection'),
     path('nodes/create-relationship', ConnectNodesView.as_view(), name='connect_nodes'),
     path('nodes/delete-relationship', DeleteNodeConnectionView.as_view(), name='delete_node_connection'),
-    
+        path('graph/search/', AdvancedGraphSearchView.as_view(), name='advanced_graph_search'),
+
     
     path('node-types', NodeTypesView.as_view(), name="node_types"),
     path('nodes/connect-unconnected', ConnectUnconnectedNodeView.as_view(), name='connect_unconnected_node'),

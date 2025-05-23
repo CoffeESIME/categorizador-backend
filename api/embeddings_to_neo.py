@@ -201,26 +201,21 @@ def store_chunk_in_weaviate(client, chunk_text: str, embedding: list[float], ori
         print(f"Error guardando chunk en Weaviate para {original_doc_id}: {e}")
         return None
 def guardar_imagen_en_weaviate(
-    client,
+    client, 
     *,
-    meta: dict,
-    vec_clip: list[float] | None = None,   # vector visual
-    vec_ocr:  list[float] | None = None,   # vector del OCR
-    vec_desc: list[float] | None = None,   # vector de la descripción
+    meta: dict, 
+    vec_clip: list[float] | None = None,
+    vec_ocr:  list[float] | None = None,
+    vec_desc: list[float] | None = None,
 ) -> str | None:
-    """
-    Inserta un objeto en la colección 'Imagenes' con hasta tres
-    named-vectors (vector_clip, vector_ocr, vector_des).
+    
+    propiedades_for_weaviate = {k: v for k, v in meta.items() if v is not None}
 
-    — al menos uno de los tres debe estar presente —
-    """
-    if not any([vec_clip, vec_ocr, vec_desc]):
-        raise ValueError("Proporciona al menos un vector")
+    if "doc_id" in propiedades_for_weaviate:
+        propiedades_for_weaviate["doc_id"] = str(propiedades_for_weaviate["doc_id"])
+    else:
+        print(f"ADVERTENCIA: 'doc_id' no encontrado en meta para guardar_imagen_en_weaviate. Meta: {meta}")
 
-    # 1. Limpia metadatos vacíos
-    propiedades = {k: v for k, v in meta.items() if v is not None}
-
-    # 2. Construye el diccionario de vectores con los que existan
     vectores = {}
     if vec_clip is not None:
         vectores["vector_clip"] = vec_clip
@@ -229,16 +224,33 @@ def guardar_imagen_en_weaviate(
     if vec_desc is not None:
         vectores["vector_des"] = vec_desc
 
-    # 3. Inserta en Weaviate
-    imagenes = client.collections.get("Imagenes")
-    uuid = imagenes.data.insert(properties=propiedades, vector=vectores)
+    try:
+        imagenes_collection = client.collections.get("Imagenes")
+        
+        print(f"DEBUG: Enviando a Weaviate (Imagenes) propiedades: {propiedades_for_weaviate}")
 
-    print(f"[OK] guardado {meta.get('doc_id')} · UUID: {uuid}")
-    return uuid
-
+        if not vectores:
+            insert_result_uuid = imagenes_collection.data.insert(properties=propiedades_for_weaviate)
+        else:
+            insert_result_uuid = imagenes_collection.data.insert(properties=propiedades_for_weaviate, vector=vectores)
+        
+        # CORRECCIÓN AQUÍ:
+        # insert_result_uuid ya es el objeto uuid.UUID directamente.
+        # No necesitas acceder a .uuid en él.
+        
+        print(f"[OK] Objeto guardado en Imagenes {propiedades_for_weaviate.get('doc_id')} · UUID: {insert_result_uuid}")
+        return str(insert_result_uuid) # Convertir el objeto uuid.UUID a string para el retorno
+        
+    except Exception as e:
+        print(f"Error al guardar en Weaviate (Imagenes) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}")
+        print(f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}")
+        raise
 def limpiar_meta(meta: dict) -> dict:
-    """Devuelve un dict sin la clave prohibida 'id'."""
-    meta = meta.copy()
-    if "id" in meta:
-        meta["doc_id"] = meta.pop("id")   # o el nombre que prefieras
-    return {k: v for k, v in meta.items() if v is not None}
+    meta_copy = meta.copy()
+    if "id" in meta_copy:
+        # Asegurar que el valor que se convierte en doc_id sea una cadena
+        meta_copy["doc_id"] = str(meta_copy.pop("id"))
+    # Si 'doc_id' ya existe y no hay 'id', asegurarse de que 'doc_id' también sea string
+    elif "doc_id" in meta_copy:
+         meta_copy["doc_id"] = str(meta_copy["doc_id"])
+    return {k: v for k, v in meta_copy.items() if v is not None}
