@@ -1,3 +1,4 @@
+import re
 import traceback
 from .embeddings_to_neo import limpiar_meta, store_embedding, guardar_imagen_en_weaviate
 from rest_framework.views import APIView
@@ -775,7 +776,7 @@ class DeleteNodeConnectionView(APIView):
     def delete(self, request, *args, **kwargs):
         source_node_id = request.data.get("sourceId")
         target_node_id = request.data.get("targetId")
-        relationship_type = request.data.get("relationshipType")
+        relationship_type_from_request = request.data.get("relationshipType")
 
         if not source_node_id or not target_node_id:
             return Response(
@@ -783,27 +784,36 @@ class DeleteNodeConnectionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Construir la consulta según si se especificó un tipo de relación
-        if relationship_type:
+        params = {
+            "nodeId": source_node_id,
+            "connectionNodeId": target_node_id
+        }
+        
+        if relationship_type_from_request:
+
+            if not re.match(r"^[a-zA-Z0-9_]+$", relationship_type_from_request):
+                return Response(
+                    {"error": "El tipo de relación contiene caracteres no válidos."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             query = """
-            MATCH (n {id: $nodeId})-[r:`{}`]->(m {id: $connectionNodeId})
+            MATCH (n {id: $nodeId})-[r]->(m {id: $connectionNodeId})
+            WHERE type(r) = $relType
             DELETE r
-            RETURN count(r) as deletedRelations
-            """.format(relationship_type)
+            """
+            params["relType"] = relationship_type_from_request
         else:
             query = """
             MATCH (n {id: $nodeId})-[r]->(m {id: $connectionNodeId})
             DELETE r
-            RETURN count(r) as deletedRelations
             """
-
         try:
             with driver.session() as session:
-                result = session.run(query, 
-                                   nodeId=source_node_id, 
-                                   connectionNodeId=target_node_id)
-                record = result.single()
-                deleted_count = record["deletedRelations"] if record else 0
+                result = session.run(query, **params)
+                summary = result.consume() # Obtener el resumen del resultado
+                
+                # Obtener el conteo de relaciones eliminadas del summary
+                deleted_count = summary.counters.relationships_deleted
 
                 if deleted_count > 0:
                     return Response(
@@ -815,14 +825,15 @@ class DeleteNodeConnectionView(APIView):
                     )
                 else:
                     return Response(
-                        {"error": "No se encontró la conexión especificada."},
+                        {"error": "No se encontró o eliminó la conexión especificada (verifique IDs y tipo de relación)."},
                         status=status.HTTP_404_NOT_FOUND
                     )
         except Exception as e:
             return Response(
-                {"error": str(e)},
+                {"error": f"Error interno del servidor: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
 
 class ConnectNodesView(APIView):
     """
