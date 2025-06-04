@@ -1059,10 +1059,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 import json
-from .neo4j_client import driver #
-# Necesitarás una función para serializar nodos que maneje tipos DateTime, etc.
-# como la que discutimos anteriormente.
-# from .utils import serialize_neo4j_node (o define una similar aquí)
+from .neo4j_client import driver 
 
 def serialize_neo4j_value(value):
     """Serializa valores de Neo4j, especialmente tipos temporales."""
