@@ -488,33 +488,6 @@ class GraphView(APIView):
                         "target": target,
                         "relation": record.get("relation")
                     })
-            # Obtener las relaciones (edges) entre los nodos recuperados
-            node_ids = [node["nodeId"] for node in nodes if node.get("nodeId")]
-            if node_ids:
-                query_edges = """
-                    MATCH (a)-[r]->(b)
-                    WHERE (a.doc_id IN $nodeIds OR a.id IN $nodeIds)
-                      AND (b.doc_id IN $nodeIds OR b.id IN $nodeIds)
-                """
-                if relationship_type:
-                    query_edges += " AND type(r) = $relationshipType "
-                query_edges += " RETURN a, b, type(r) as relation"
-                
-                params = {"nodeIds": node_ids}
-                if relationship_type:
-                    params["relationshipType"] = relationship_type
-                
-                edge_result = session.run(query_edges, **params)
-                for record in edge_result:
-                    a = dict(record.get("a"))
-                    b = dict(record.get("b"))
-                    source = a.get("doc_id") or a.get("id")
-                    target = b.get("doc_id") or b.get("id")
-                    edges.append({
-                        "source": source,
-                        "target": target,
-                        "relation": record.get("relation")
-                    })
 
         return Response({"nodes": nodes, "edges": edges}, status=status.HTTP_200_OK)
 
