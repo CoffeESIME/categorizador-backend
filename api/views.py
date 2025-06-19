@@ -1792,10 +1792,7 @@ class TextMetadataProcessingView(APIView):
     - content: El texto original
     """
     def post(self, request, *args, **kwargs):
-        from langchain_ollama import OllamaEmbeddings
-        import json
-        import os
-        import uuid
+
         
         try:
             # Verificar si recibimos un array o un objeto único
@@ -1890,3 +1887,88 @@ class TextMetadataProcessingView(APIView):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+            
+            
+            
+            
+            
+class IngestAuthorDataView(APIView):
+    """
+    Endpoint para la ingesta completa de un objeto de autor.
+    Esta versión es 100% consistente con el modelo de relaciones definido
+    en el frontend, tratando los 'temas' y 'tags' como conceptos.
+    """
+    def post(self, request, *args, **kwargs):
+        author_data = request.data
+        
+        if not all(k in author_data for k in ['author_id', 'name', 'temas', 'quotes']):
+            return Response(
+                {"error": "El JSON debe contener 'author_id', 'name', 'temas' y 'quotes'."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Consulta Cypher actualizada para ser consistente con tu lista de relaciones.
+        ingest_query = """
+        // Recibe todo el objeto JSON como un parámetro $data
+        WITH $data AS author
+        
+        // 1. Crea o encuentra al autor (Person) usando MERGE para evitar duplicados.
+        MERGE (p:Person {author_id: author.author_id})
+        ON CREATE SET
+            p.name = author.name,
+            p.birth_year = author.birth_year,
+            p.death_year = author.death_year,
+            p.major_work = author.major_work
+        
+        // 2. Procesa la lista de 'temas' del autor.
+        // Cada 'tema' se convierte en un nodo 'Concept'.
+        // La relación (Person)-[IS_ABOUT]->(Concept) representa los temas generales del autor.
+        WITH p, author
+        UNWIND author.temas AS tema_name
+        MERGE (c:Concept {name: tema_name})
+        MERGE (p)-[:IS_ABOUT]->(c)
+        
+        // 3. Procesa la lista de 'quotes' del autor.
+        WITH DISTINCT p, author
+        UNWIND author.quotes AS quote_data
+        
+        // Crea o encuentra la cita (Quote)
+        MERGE (q:Quote {quote_id: quote_data.quote_id})
+        ON CREATE SET
+            q.text = quote_data.text,
+            q.source = quote_data.source
+        
+        // Crea la relación (Person)-[AUTHORED_BY]->(Quote)
+        MERGE (p)-[:AUTHORED_BY]->(q)
+        
+        // 4. Procesa los 'tags' de cada cita.
+        // Interpretamos cada 'tag' de la cita como un 'Concept' sobre el cual trata la cita.
+        // Esto es mucho más potente que usar la relación TAGGED_AS.
+        WITH q, quote_data
+        UNWIND quote_data.tags AS concept_name_from_tag
+        MERGE (c_tag:Concept {name: concept_name_from_tag})
+        
+        // Crea la relación (Quote)-[IS_ABOUT]->(Concept)
+        MERGE (q)-[:IS_ABOUT]->(c_tag)
+        
+        // 5. Devolvemos un resumen de lo que se creó o encontró.
+        RETURN count(DISTINCT p) AS authors_processed, 
+               count(DISTINCT q) AS quotes_processed, 
+               count(DISTINCT c_tag) + count(DISTINCT c) AS concepts_processed
+        """
+        
+        try:
+            with driver.session() as session:
+                summary = session.execute_write(
+                    lambda tx: tx.run(ingest_query, data=author_data).single()
+                )
+                
+                response_data = {
+                    "message": "Ingesta de datos completada de forma consistente con el modelo.",
+                    "author_id": author_data.get("author_id"),
+                    "summary": dict(summary) if summary else {}
+                }
+                return Response(response_data, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({"error": f"Error en la transacción de Neo4j: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

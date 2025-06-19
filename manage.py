@@ -80,7 +80,7 @@ def seed_node_types():
             "fields": json.dumps([
                 {"fieldName": "text", "placeholder": "Texto de la cita", "required": True},
                 {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True},
-                {"fieldName": "allowEmbedding", "placeholder": "¿Permitir embeddings? (true/false)", "required": False},
+                {"fieldName": "allowEmbedding", "placeholder": "¿Permitir embeddings? (True/False)", "required": False},
             ])
         },
         {
@@ -90,7 +90,7 @@ def seed_node_types():
                 {"fieldName": "title", "placeholder": "Título de la canción/pieza", "required": True},
                 {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True},
                 {"fieldName": "artist", "placeholder": "Artista o banda", "required": False},
-                {"fieldName": "on_pc", "placeholder": "¿Está almacenada localmente? (true/false)", "required": False},
+                {"fieldName": "on_pc", "placeholder": "¿Está almacenada localmente? (True/False)", "required": False},
             ])
         },
         {
@@ -119,7 +119,83 @@ def seed_node_types():
             {"fieldName": "style", "placeholder": "Estilo (opcional)", "required": False},
             {"fieldName": "file_location", "placeholder": "Ubicación del archivo en el sistema", "required": False}
         ])
-    }
+    },
+            #more 
+            {
+    "id": "post",
+    "name": "Post",
+    "fields": json.dumps([
+        {"fieldName": "title", "placeholder": "Título del post (opcional)", "required": False},
+        {"fieldName": "post_id", "placeholder": "ID del post o URL única", "required": True},
+        {"fieldName": "post_type", "placeholder": "Tipo (ej. Texto, Imagen, Cita, Enlace, Video)", "required": True},
+        {"fieldName": "content", "placeholder": "Contenido principal o cuerpo del texto", "required": False},
+        {"fieldName": "image_url", "placeholder": "URL de la imagen (si aplica)", "required": False},
+        {"fieldName": "source_url", "placeholder": "URL de la fuente original (si es un reblog)", "required": False},
+        {"fieldName": "source_author", "placeholder": "Autor de la fuente original (si se conoce)", "required": False},
+        {"fieldName": "tags_string", "placeholder": "Etiquetas separadas por comas (ej. arte, filosofía)", "required": False},
+        {"fieldName": "notes", "placeholder": "Tus notas o comentarios personales sobre el post", "required": False}
+    ])
+},
+{
+    "id": "concept",
+    "name": "Concept",
+    "fields": json.dumps([
+        {"fieldName": "name", "placeholder": "Nombre del Concepto", "required": True},
+        {"fieldName": "description", "placeholder": "Definición o resumen del concepto", "required": True},
+        {"fieldName": "domain", "placeholder": "Dominio o campo (ej. Filosofía, Física)", "required": False}
+    ])
+},
+{
+    "id": "project",
+    "name": "Project",
+    "fields": json.dumps([
+        {"fieldName": "name", "placeholder": "Nombre del Proyecto", "required": True},
+        {"fieldName": "description", "placeholder": "Objetivo o resumen del proyecto", "required": False},
+        {"fieldName": "status", "placeholder": "Estado (ej. Activo, Pausado, Completado)", "required": False},
+        {"fieldName": "start_date", "placeholder": "Fecha de inicio (YYYY-MM-DD)", "required": False},
+        {"fieldName": "end_date", "placeholder": "Fecha de finalización (YYYY-MM-DD)", "required": False}
+    ])
+},
+{
+    "id": "event",
+    "name": "Event",
+    "fields": json.dumps([
+        {"fieldName": "name", "placeholder": "Nombre del Evento", "required": True},
+        {"fieldName": "date", "placeholder": "Fecha del evento (YYYY-MM-DD)", "required": False},
+        {"fieldName": "location", "placeholder": "Lugar (ej. Ciudad, País, Online)", "required": False},
+        {"fieldName": "description", "placeholder": "Descripción del evento", "required": False}
+    ])
+},
+{
+    "id": "organization",
+    "name": "Organization",
+    "fields": json.dumps([
+        {"fieldName": "name", "placeholder": "Nombre de la Organización", "required": True},
+        {"fieldName": "type", "placeholder": "Tipo (ej. Universidad, Editorial, Empresa)", "required": False},
+        {"fieldName": "website", "placeholder": "Sitio web oficial", "required": False}
+    ])
+},
+{
+    "id": "source",
+    "name": "Source",
+    "fields": json.dumps([
+        {"fieldName": "title", "placeholder": "Título de la fuente", "required": True},
+        {"fieldName": "url", "placeholder": "URL del recurso en línea", "required": False},
+        {"fieldName": "type", "placeholder": "Tipo de fuente (ej. Artículo web, Paper)", "required": False},
+        {"fieldName": "access_date", "placeholder": "Fecha de acceso (YYYY-MM-DD)", "required": False},
+        {"fieldName": "doc_id", "placeholder": "ID del archivo si aplica", "required": False}
+    ])
+},
+{
+    "id": "person", 
+    "name": "Person",
+    "fields": json.dumps([
+        {"fieldName": "name", "placeholder": "Nombre de la persona", "required": True},
+        {"fieldName": "birthdate", "placeholder": "Fecha de nacimiento (YYYY-MM-DD)", "required": False},
+        {"fieldName": "bio", "placeholder": "Breve biografía", "required": False},
+        {"fieldName": "roles", "placeholder": "Roles (ej. Autor, Actor, Traductor)", "required": False}
+    ])
+}
     ]
 
     with driver.session() as session:
