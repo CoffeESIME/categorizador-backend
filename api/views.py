@@ -161,7 +161,10 @@ class MetadataProcessingView(APIView):
                             texts_for_embedding.append(meta["description"])
                         combined_text = " ".join(texts_for_embedding)
                         if combined_text:
-                            embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                            embedding_model = OllamaEmbeddings(
+                                model=settings.DEFAULT_EMBED_MODEL,
+                                base_url=settings.LLM_BASE_URL,
+                            )
                             embedding_des = embedding_model.embed_documents([combined_text])[0]
                         uuid = guardar_imagen_en_weaviate(
                             client=CLIENT,
@@ -190,7 +193,10 @@ class MetadataProcessingView(APIView):
                     ocr_text = meta.get("ocr_text", "")
                     if ocr_text:
                         meta["content"] = ocr_text  # Guardar el texto OCR como contenido
-                        embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                        embedding_model = OllamaEmbeddings(
+                            model=settings.DEFAULT_EMBED_MODEL,
+                            base_url=settings.LLM_BASE_URL,
+                        )
                         embedding_text = embedding_model.embed_documents([ocr_text])[0]
                         image = Image.open(image_path).convert("RGB") # Asegurar formato RGB
                         image_input = preprocess(image).unsqueeze(0).to(device)
@@ -237,7 +243,10 @@ class MetadataProcessingView(APIView):
                             texts_for_embedding.append(meta["description"])
                     combined_text = " ".join(texts_for_embedding)
                     if combined_text:
-                        embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                        embedding_model = OllamaEmbeddings(
+                            model=settings.DEFAULT_EMBED_MODEL,
+                            base_url=settings.LLM_BASE_URL,
+                        )
                         embedding = embedding_model.embed_documents([combined_text])[0]
 
                 # elif embedding_type == "audio":
@@ -278,7 +287,10 @@ class MetadataProcessingView(APIView):
                             texts_for_embedding.append(meta["description"])
                     combined_text = " ".join(texts_for_embedding)
                     if combined_text:
-                        embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+                        embedding_model = OllamaEmbeddings(
+                            model=settings.DEFAULT_EMBED_MODEL,
+                            base_url=settings.LLM_BASE_URL,
+                        )
                         embedding = embedding_model.embed_documents([combined_text])[0]
                 uploaded_file.status = "vectorized"
                 uploaded_file.save()
@@ -968,7 +980,10 @@ class ConnectUnconnectedNodeView(APIView):
                     })
                 
                 # Inicializar el modelo LLM
-                llm = Ollama(model="mistral")
+                llm = Ollama(
+                    model=settings.DEFAULT_LLM_MODEL,
+                    base_url=settings.LLM_BASE_URL,
+                )
                 
                 # Construir el prompt para el LLM
                 prompt = f"""
@@ -1691,9 +1706,9 @@ class TextProcessView(APIView):
             
             # Inicializar el modelo LLM
             llm = ChatOllama(
-                base_url="http://localhost:11434",
+                base_url=settings.LLM_BASE_URL,
                 model=model,
-                temperature=temperature
+                temperature=temperature,
             )
             
             # Ejecutar el modelo
@@ -1780,7 +1795,10 @@ class TextMetadataProcessingView(APIView):
                 )
             
             # Inicializar modelo de embeddings
-            embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+            embedding_model = OllamaEmbeddings(
+                model=settings.DEFAULT_EMBED_MODEL,
+                base_url=settings.LLM_BASE_URL,
+            )
             results = []
             
             for metadata in metadata_list:

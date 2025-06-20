@@ -4,6 +4,7 @@ import json
 from api.neo4j_client import driver
 import weaviate
 import weaviate.classes.config as wc
+from django.conf import settings
 
 
 def seed_node_types():
@@ -219,8 +220,12 @@ def ensure_upload_directories():
 def seed_weaviate_schema() -> None:
     """Crea colecciones en Weaviate si no existen."""
     client = weaviate.connect_to_custom(
-        http_host="localhost", http_port=8080, http_secure=False,
-        grpc_host="localhost", grpc_port=50051, grpc_secure=False,
+        http_host=settings.WEAVIATE_HTTP_HOST,
+        http_port=settings.WEAVIATE_HTTP_PORT,
+        http_secure=settings.WEAVIATE_HTTP_SECURE,
+        grpc_host=settings.WEAVIATE_GRPC_HOST,
+        grpc_port=settings.WEAVIATE_GRPC_PORT,
+        grpc_secure=settings.WEAVIATE_GRPC_SECURE,
         headers={"X-OpenAI-Api-Key": os.getenv("OPENAI_APIKEY", "")}
     )
     client.connect()
