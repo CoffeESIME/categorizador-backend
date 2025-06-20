@@ -4,6 +4,7 @@ from neo4j import GraphDatabase
 from api.embeddings_to_neo import store_embedding  # Usa tu store_embedding actual
 from api.neo4j_client import driver                # Driver de Neo4j
 from langchain_ollama import OllamaEmbeddings     # Para obtener embeddings con tu modelo local
+from django.conf import settings
 
 def process_authors_data(authors_file="data.json", output_file="quotes_final.json"):
     """
@@ -45,7 +46,10 @@ def process_authors_data(authors_file="data.json", output_file="quotes_final.jso
         authors_data = json.load(f)
 
     # 2) Inicializar el modelo de embeddings local de Ollama
-    embedding_model = OllamaEmbeddings(model="granite-embedding:latest")
+    embedding_model = OllamaEmbeddings(
+        model=settings.DEFAULT_EMBED_MODEL,
+        base_url=settings.LLM_BASE_URL,
+    )
 
     # 3) Diccionario para guardar la info final (quotes)
     final_quotes = {}

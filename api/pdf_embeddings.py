@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
+from django.conf import settings
 
 from .embeddings_to_neo import store_chunk_in_weaviate
 
@@ -40,7 +41,8 @@ def embed_pdf_and_store(
     for p in parents:
         children.extend(splitter_child.split_documents([p]))
 
-    emb_model = OllamaEmbeddings(model="granite-embedding:latest")
+    emb_model = OllamaEmbeddings(model=settings.DEFAULT_EMBED_MODEL,
+                                 base_url=settings.LLM_BASE_URL)
     texts = [c.page_content for c in children]
     vectors = emb_model.embed_documents(texts)
 

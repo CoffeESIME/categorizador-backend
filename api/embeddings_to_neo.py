@@ -3,15 +3,16 @@ from .neo4j_client import driver
 import uuid
 import os
 import weaviate
+from django.conf import settings
 
 # Conexión personalizada a Weaviate
 client = weaviate.connect_to_custom(
-    http_host="localhost",
-    http_port=8080,
-    http_secure=False,
-    grpc_host="localhost",
-    grpc_port=50051,
-    grpc_secure=False,
+    http_host=settings.WEAVIATE_HTTP_HOST,
+    http_port=settings.WEAVIATE_HTTP_PORT,
+    http_secure=settings.WEAVIATE_HTTP_SECURE,
+    grpc_host=settings.WEAVIATE_GRPC_HOST,
+    grpc_port=settings.WEAVIATE_GRPC_PORT,
+    grpc_secure=settings.WEAVIATE_GRPC_SECURE,
     headers={
         "X-OpenAI-Api-Key": os.getenv("OPENAI_APIKEY", "")
     }

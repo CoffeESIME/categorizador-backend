@@ -130,3 +130,24 @@ CORS_ALLOWED_ORIGINS = [
     "https://tudominio.com",
 ]
 CSRF_TRUSTED_ORIGINS = ['http://localhost:3000']
+
+# --- Custom project settings -------------------------------------------------
+
+# Default models and LLM endpoints used across the project
+DEFAULT_EMBED_MODEL = os.getenv("DEFAULT_EMBED_MODEL", "granite-embedding:latest")
+DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "mistral")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
+
+# Specific models for certain tasks
+IMAGE_DESCRIPTION_MODEL = os.getenv("IMAGE_DESCRIPTION_MODEL", "llava:34b")
+OCR_MODEL = os.getenv("OCR_MODEL", "llava:34b")
+OCR_ANALYSIS_MODEL = os.getenv("OCR_ANALYSIS_MODEL", "deepseek-r1:32b")
+TESSERACT_ANALYSIS_MODEL = os.getenv("TESSERACT_ANALYSIS_MODEL", "deepseek-r1:14b")
+
+# Weaviate configuration
+WEAVIATE_HTTP_HOST = os.getenv("WEAVIATE_HTTP_HOST", "localhost")
+WEAVIATE_HTTP_PORT = int(os.getenv("WEAVIATE_HTTP_PORT", 8080))
+WEAVIATE_HTTP_SECURE = os.getenv("WEAVIATE_HTTP_SECURE", "false").lower() == "true"
+WEAVIATE_GRPC_HOST = os.getenv("WEAVIATE_GRPC_HOST", "localhost")
+WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", 50051))
+WEAVIATE_GRPC_SECURE = os.getenv("WEAVIATE_GRPC_SECURE", "false").lower() == "true"

@@ -317,7 +317,7 @@ class LLMProcessView(APIView):
         temperature = request.data.get("temperature", 0.5)
         max_tokens = request.data.get("max_tokens", 100000)
         downloads_dir = settings.MEDIA_ROOT
-        base_url = "http://localhost:11434"
+        base_url = settings.LLM_BASE_URL
         
         try:
             if task == "text":
@@ -330,9 +330,9 @@ class LLMProcessView(APIView):
                 prompt = build_text_prompt(input_text)
                 llm = ChatOllama(
                     base_url=base_url,
-                    model=request.data.get("model", "deepseek-r1:32b"),
+                    model=request.data.get("model", settings.DEFAULT_LLM_MODEL),
                     temperature=temperature,
-                    num_predict=max_tokens
+                    num_predict=max_tokens,
                 )
                 result = llm.invoke(prompt)
                 response_str = result.content if hasattr(result, "content") else result
@@ -363,9 +363,9 @@ class LLMProcessView(APIView):
                 messages = build_few_shot_image_prompt(prompt_text, image_b64, "image")
                 llm = ChatOllama(
                     base_url=base_url,
-                    model=request.data.get("model", "llava:34b"),
+                    model=request.data.get("model", settings.IMAGE_DESCRIPTION_MODEL),
                     temperature=temperature,
-                    num_predict=max_tokens
+                    num_predict=max_tokens,
                 )
                 result = llm.invoke(messages)
                 response_str = result.content if hasattr(result, "content") else result
@@ -397,7 +397,7 @@ class LLMProcessView(APIView):
                     )
                     
                     prompt = build_ocr_analysis_prompt(extracted_text, analysis_prompt)
-                    analysis_model = request.data.get("model", "deepseek-r1:14b")
+                    analysis_model = request.data.get("model", settings.TESSERACT_ANALYSIS_MODEL)
                     llm = ChatOllama(
                         base_url=base_url,
                         model=analysis_model,
@@ -419,7 +419,7 @@ class LLMProcessView(APIView):
                     prompt_text = request.data.get("prompt", "Extrae todo el texto visible en esta imagen. Solo devuelve el texto extraído, sin análisis ni comentarios adicionales.")
                     image_b64 = image_to_base64(file_path)
                     ocr_prompt = build_few_shot_image_prompt(prompt_text, image_b64, "ocr")
-                    ocr_model = request.data.get("ocr_model", "llava:34b")
+                    ocr_model = request.data.get("ocr_model", settings.OCR_MODEL)
                     ocr_llm = ChatOllama(
                         base_url=base_url,
                         model=ocr_model,
@@ -438,7 +438,7 @@ class LLMProcessView(APIView):
                     
                     analysis_prompt_obj = build_ocr_analysis_prompt(extracted_text, analysis_prompt)
                     
-                    analysis_model = request.data.get("analysis_model", "deepseek-r1:32b")
+                    analysis_model = request.data.get("analysis_model", settings.OCR_ANALYSIS_MODEL)
                     analysis_llm = ChatOllama(
                         base_url=base_url,
                         model=analysis_model,

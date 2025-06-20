@@ -1,5 +1,6 @@
 import  torch, clip
 from langchain_ollama import OllamaEmbeddings, ChatOllama
+from django.conf import settings
 from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import ChatPromptTemplate
 
@@ -37,9 +38,8 @@ CLIP_EMB = CLIPEmbeddings()
 
 # ── 2. Embeddings y LLM de texto ─────────────────────────────
 TEXT_EMB = OllamaEmbeddings(
-    model="granite-embedding:latest", 
-    base_url="http://localhost:11434", 
-                   
+    model=settings.DEFAULT_EMBED_MODEL,
+    base_url=settings.LLM_BASE_URL,
 )
 
 LLM_REWRITER = (
@@ -48,7 +48,13 @@ LLM_REWRITER = (
         "Devuelve EXACTAMENTE 10 palabras clave, separadas por comas, "
         "sin numeración ni texto extra:\n{q}"
     )
-    | ChatOllama(model="gemma3:latest", temperature=0.2, max_tokens=6400,  base_url="http://localhost:11434",  options={"format": "text"}   )
+    | ChatOllama(
+        model="gemma3:latest",
+        temperature=0.2,
+        max_tokens=6400,
+        base_url=settings.LLM_BASE_URL,
+        options={"format": "text"},
+    )
     | StrOutputParser()
 ).invoke
 
