@@ -1885,24 +1885,77 @@ class TextMetadataProcessingView(APIView):
             
 class IngestAuthorDataView(APIView):
     """
-    Endpoint para la ingesta completa de un objeto de autor.
-    Esta versión es 100% consistente con el modelo de relaciones definido
-    en el frontend, tratando los 'temas' y 'tags' como conceptos.
+    Endpoint híbrido para la ingesta completa de un objeto de autor.
+    1. Genera embeddings para cada cita y los guarda en Weaviate.
+    2. Crea la estructura de nodos y relaciones en Neo4j en una transacción.
+    El ``quote_id`` se usa como enlace entre ambos sistemas.
     """
+
     def post(self, request, *args, **kwargs):
         author_data = request.data
-        
-        if not all(k in author_data for k in ['author_id', 'name', 'temas', 'quotes']):
+
+        if not all(k in author_data for k in ["author_id", "name", "quotes"]):
             return Response(
-                {"error": "El JSON debe contener 'author_id', 'name', 'temas' y 'quotes'."},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": "El JSON debe contener al menos 'author_id', 'name', y 'quotes'."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Consulta Cypher actualizada para ser consistente con tu lista de relaciones.
+        # Asegurar que exista la lista de temas para evitar errores en Cypher
+        author_data.setdefault("temas", [])
+
+        # --- 1. Inicialización de Clientes ---
+        try:
+            embedding_model = OllamaEmbeddings(
+                model=settings.DEFAULT_EMBED_MODEL,
+                base_url=settings.LLM_BASE_URL,
+            )
+            weaviate_client = CLIENT
+        except Exception as e:
+            return Response(
+                {"error": f"Error al inicializar clientes: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # --- 2. Preparación de Datos para Weaviate (Batch) ---
+        quotes_to_embed = author_data.get("quotes", [])
+        if not quotes_to_embed:
+            return Response({"message": "No hay citas para procesar."}, status=status.HTTP_200_OK)
+
+        quote_texts = [q.get("text", "") for q in quotes_to_embed]
+        quote_vectors = embedding_model.embed_documents(quote_texts)
+
+        weaviate_objects_to_add = []
+        for i, quote in enumerate(quotes_to_embed):
+            properties = {
+                "doc_id": quote.get("quote_id"),
+                "author": author_data.get("name"),
+                "title": f"Cita de {author_data.get('name')}",
+                "content": quote.get("text"),
+                "source": quote.get("source"),
+            }
+            weaviate_objects_to_add.append({"properties": properties, "vector": quote_vectors[i]})
+
+        # --- 3. Ingesta por Lotes en Weaviate ---
+        try:
+            with weaviate_client.batch as batch:
+                batch.batch_size = 100
+                for obj in weaviate_objects_to_add:
+                    batch.add_data_object(
+                        data_object=obj["properties"],
+                        class_name="Textos",
+                        vector=obj["vector"],
+                    )
+        except Exception as e:
+            return Response(
+                {"error": f"Error durante la ingesta en Weaviate: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        # --- 4. Ingesta Transaccional en Neo4j ---
         ingest_query = """
         // Recibe todo el objeto JSON como un parámetro $data
         WITH $data AS author
-        
+
         // 1. Crea o encuentra al autor (Person) usando MERGE para evitar duplicados.
         MERGE (p:Person {author_id: author.author_id})
         ON CREATE SET
@@ -1910,7 +1963,7 @@ class IngestAuthorDataView(APIView):
             p.birth_year = author.birth_year,
             p.death_year = author.death_year,
             p.major_work = author.major_work
-        
+
         // 2. Procesa la lista de 'temas' del autor.
         // Cada 'tema' se convierte en un nodo 'Concept'.
         // La relación (Person)-[IS_ABOUT]->(Concept) representa los temas generales del autor.
@@ -1918,48 +1971,52 @@ class IngestAuthorDataView(APIView):
         UNWIND author.temas AS tema_name
         MERGE (c:Concept {name: tema_name})
         MERGE (p)-[:IS_ABOUT]->(c)
-        
+
         // 3. Procesa la lista de 'quotes' del autor.
         WITH DISTINCT p, author
         UNWIND author.quotes AS quote_data
-        
+
         // Crea o encuentra la cita (Quote)
         MERGE (q:Quote {quote_id: quote_data.quote_id})
         ON CREATE SET
             q.text = quote_data.text,
             q.source = quote_data.source
-        
+
         // Crea la relación (Person)-[AUTHORED_BY]->(Quote)
         MERGE (p)-[:AUTHORED_BY]->(q)
-        
+
         // 4. Procesa los 'tags' de cada cita.
         // Interpretamos cada 'tag' de la cita como un 'Concept' sobre el cual trata la cita.
         // Esto es mucho más potente que usar la relación TAGGED_AS.
         WITH q, quote_data
         UNWIND quote_data.tags AS concept_name_from_tag
         MERGE (c_tag:Concept {name: concept_name_from_tag})
-        
+
         // Crea la relación (Quote)-[IS_ABOUT]->(Concept)
         MERGE (q)-[:IS_ABOUT]->(c_tag)
-        
+
         // 5. Devolvemos un resumen de lo que se creó o encontró.
-        RETURN count(DISTINCT p) AS authors_processed, 
-               count(DISTINCT q) AS quotes_processed, 
-               count(DISTINCT c_tag) + count(DISTINCT c) AS concepts_processed
+        RETURN count(DISTINCT p) AS authors,
+               count(DISTINCT q) AS quotes,
+               count(DISTINCT c_tag) + count(DISTINCT c) AS concepts
         """
-        
+
         try:
             with driver.session() as session:
                 summary = session.execute_write(
                     lambda tx: tx.run(ingest_query, data=author_data).single()
                 )
-                
+
                 response_data = {
-                    "message": "Ingesta de datos completada de forma consistente con el modelo.",
+                    "message": "Ingesta completada: Grafo creado en Neo4j y vectores guardados en Weaviate.",
                     "author_id": author_data.get("author_id"),
-                    "summary": dict(summary) if summary else {}
+                    "neo4j_summary": dict(summary) if summary else {},
+                    "weaviate_summary": {"vectors_added": len(weaviate_objects_to_add)},
                 }
                 return Response(response_data, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            return Response({"error": f"Error en la transacción de Neo4j: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"error": f"Error en la transacción de Neo4j: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
