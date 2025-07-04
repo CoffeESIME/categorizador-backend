@@ -1,31 +1,25 @@
 import re
 import traceback
-from .embeddings_to_neo import limpiar_meta, store_embedding, guardar_imagen_en_weaviate
+import os
+import json
+import uuid
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
-from .serializers import UploadedFileSerializer
-import os
-import json
 from django.conf import settings
+
+from .serializers import UploadedFileSerializer
 from .models import UploadedFile
-from langchain_ollama import OllamaEmbeddings
-import uuid
 from .neo4j_client import driver
-import torch, clip
-from PIL import Image
-from .pdf_embeddings import embed_pdf_and_store
-from .weaviate_client import CLIENT  
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model_clip = None
-preprocess = None
-try:
-    model_clip, preprocess = clip.load("ViT-B/32", device=device)
-    print(f"Modelo CLIP 'ViT-B/32' cargado exitosamente en el dispositivo: {device}")
-except Exception as e:
-    print(f"Error crítico al cargar el modelo CLIP: {e}")
-    print("El procesamiento de imágenes estará deshabilitado.")
+
+from .services.processing import (
+    process_pdf,
+    process_image_with_description,
+    process_ocr_with_image,
+    process_text_embeddings,
+)
 
 
 class MultiFileUploadView(APIView):
@@ -113,141 +107,31 @@ class MetadataProcessingView(APIView):
 
                 embedding = []
                 uploads_dir = os.path.join('uploads', meta.get("file_location"))
-                print("embedding", embedding_type)
-                if embedding_type == "pdf":
-                    pdf_path = os.path.join("uploads", meta["file_location"])
-                    try:
-                        embeddings_created, uuids = embed_pdf_and_store(
-                            pdf_path=pdf_path,
-                            original_doc_id=file_id,
-                            client=CLIENT,
-                        )
-                        store_embedding(
-                            doc_id=file_id,
-                            embedding=[],          # vacío ➜ sólo metadatos
-                            label="UnconnectedDoc",
-                            meta=meta,
-                        )
-                    except Exception as pdf_err:
-                        results.append({"id": file_id, "error": str(pdf_err)})
-                        continue
-                if embedding_type == "image_w_des":
-                    image_path = uploads_dir
-                    if not image_path or not os.path.exists(image_path):
-                        results.append({
-                            "id": file_id,
-                            "error": "No se encontró la imagen en 'file_location'"
-                        })
-                        continue
-                    try:
-                        image = Image.open(image_path).convert("RGB") # Asegurar formato RGB
-                        image_input = preprocess(image).unsqueeze(0).to(device)
-                        with torch.no_grad():
-                            image_features = model_clip.encode_image(image_input)
-                        image_features /= image_features.norm(dim=-1, keepdim=True)
-                        embeddingClip = image_features.cpu().numpy()[0].tolist()
-                        texts_for_embedding = []
-                        embedding_des = []
-                        propiedades = limpiar_meta(meta)
-                        if meta.get("style"):
-                            texts_for_embedding.append(meta["style"])
-                        if meta.get("composition"):
-                            texts_for_embedding.append(meta["composition"])
-                        # if meta.get("color_palette"):
-                        #     texts_for_embedding.append(meta["color_palette"])
-                        if meta.get("analysis"):
-                            texts_for_embedding.append(meta["analysis"])
-                        if meta.get("description"):
-                            texts_for_embedding.append(meta["description"])
-                        combined_text = " ".join(texts_for_embedding)
-                        if combined_text:
-                            embedding_model = OllamaEmbeddings(
-                                model=settings.DEFAULT_EMBED_MODEL,
-                                base_url=settings.LLM_BASE_URL,
-                            )
-                            embedding_des = embedding_model.embed_documents([combined_text])[0]
-                        uuid = guardar_imagen_en_weaviate(
-                            client=CLIENT,
-                            meta=propiedades,
-                            vec_clip=embeddingClip,     # ← embedding visual
-                            #vec_ocr=vector_ocr,       # ← embedding OCR (si lo tienes)
-                            vec_desc=embedding_des,     # ← embedding descripción (si lo tienes)
-                        )
-                                                
-                        
-                        store_embedding(
-                            doc_id=file_id,
-                            embedding=[],
-                            label="UnconnectedDoc", 
-                            meta=meta,
-                        )
-                    except Exception as e:
-                        print(f"  Error al procesar la imagen '{image_path}': {e}")
-                        results.append({
-                            "id": file_id,
-                            "error": f"Error procesando imagen: {e}"
-                        })
-                        continue 
 
-                elif embedding_type == "ocr_w_img":
-                    ocr_text = meta.get("ocr_text", "")
-                    if ocr_text:
-                        meta["content"] = ocr_text  # Guardar el texto OCR como contenido
-                        embedding_model = OllamaEmbeddings(
-                            model=settings.DEFAULT_EMBED_MODEL,
-                            base_url=settings.LLM_BASE_URL,
-                        )
-                        embedding_text = embedding_model.embed_documents([ocr_text])[0]
-                        image = Image.open(image_path).convert("RGB") # Asegurar formato RGB
-                        image_input = preprocess(image).unsqueeze(0).to(device)
-                        with torch.no_grad():
-                            image_features = model_clip.encode_image(image_input)
-                        image_features /= image_features.norm(dim=-1, keepdim=True)
-                        embeddingClip = image_features.cpu().numpy()[0].tolist()
-                        propiedades = limpiar_meta(meta)
-                        uuid = guardar_imagen_en_weaviate(
-                            client=CLIENT,
-                            meta=propiedades,
-                            vec_clip=embeddingClip,     # ← embedding visual
-                            vec_ocr=embedding_text,       # ← embedding OCR (si lo tienes)
-                        )
-                        store_embedding(
-                            doc_id=file_id,
-                            embedding=[],
-                            label="UnconnectedDoc",
-                            meta=meta,
-                        )
-                    else:
-                        results.append({
-                            "id": file_id,
-                            "error": "No se encontró 'ocr_text' para procesamiento OCR"
-                        })
-                        continue
+                try:
+                    if embedding_type == "pdf":
+                        process_pdf(file_id, meta)
 
-                elif embedding_type == "text":
-                    # Procesar textos: content, analysis, description, etc.
-                    texts_for_embedding = []
-                    if meta.get("ocr_text"):
-                        texts_for_embedding.append(meta["ocr_text"])
-                    if meta.get("multilingual"):
-                        for lang_code in meta.get("languages", []):
-                            key = f"content_{lang_code}"
-                            if key in meta and meta[key]:
-                                texts_for_embedding.append(meta[key])
+                    elif embedding_type == "image_w_des":
+                        image_path = uploads_dir
+                        if not image_path or not os.path.exists(image_path):
+                            results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
+                            continue
+                        process_image_with_description(file_id, meta, image_path)
+
+                    elif embedding_type == "ocr_w_img":
+                        image_path = uploads_dir
+                        if not image_path or not os.path.exists(image_path):
+                            results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
+                            continue
+                        process_ocr_with_image(file_id, meta, image_path)
+
                     else:
-                        if meta.get("content"):
-                            texts_for_embedding.append(meta["content"])
-                        if meta.get("analysis"):
-                            texts_for_embedding.append(meta["analysis"])
-                        if meta.get("description"):
-                            texts_for_embedding.append(meta["description"])
-                    combined_text = " ".join(texts_for_embedding)
-                    if combined_text:
-                        embedding_model = OllamaEmbeddings(
-                            model=settings.DEFAULT_EMBED_MODEL,
-                            base_url=settings.LLM_BASE_URL,
-                        )
-                        embedding = embedding_model.embed_documents([combined_text])[0]
+                        embedding = process_text_embeddings(meta)
+
+                except Exception as proc_err:
+                    results.append({"id": file_id, "error": str(proc_err)})
+                    continue
 
                 # elif embedding_type == "audio":
                 #     # Ejemplo: usar un modelo de audio embeddings (reemplaza por tu implementación)
@@ -263,35 +147,6 @@ class MetadataProcessingView(APIView):
                 #     video_model = VideoEmbeddings(model="your-video-model")
                 #     embedding = video_model.embed(video_path)
 
-                # elif embedding_type == "graph":
-                #     # Ejemplo: procesar datos de grafo
-                #     from some_graph_embedding_module import GraphEmbeddings
-                #     graph_data = meta.get("graph_data")
-                #     graph_model = GraphEmbeddings(model="your-graph-model")
-                #     embedding = graph_model.embed(graph_data)
-
-                else:
-                    # Fallback: tratar el contenido como texto
-                    texts_for_embedding = []
-                    if meta.get("multilingual"):
-                        for lang_code in meta.get("languages", []):
-                            key = f"content_{lang_code}"
-                            if key in meta and meta[key]:
-                                texts_for_embedding.append(meta[key])
-                    else:
-                        if meta.get("content"):
-                            texts_for_embedding.append(meta["content"])
-                        if meta.get("analysis"):
-                            texts_for_embedding.append(meta["analysis"])
-                        if meta.get("description"):
-                            texts_for_embedding.append(meta["description"])
-                    combined_text = " ".join(texts_for_embedding)
-                    if combined_text:
-                        embedding_model = OllamaEmbeddings(
-                            model=settings.DEFAULT_EMBED_MODEL,
-                            base_url=settings.LLM_BASE_URL,
-                        )
-                        embedding = embedding_model.embed_documents([combined_text])[0]
                 uploaded_file.status = "vectorized"
                 uploaded_file.save()
 
