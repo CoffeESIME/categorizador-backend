@@ -26,6 +26,11 @@ regex = "^2024.11.6"
 tqdm = "^4.67.1"
 langchain-community = "^0.3.22"
 pypdf = "^5.4.0"
+transformers = "^4.41.0"   # 4.41+ contains XCLIPModel
+accelerate    = "^0.30.1"  # handles fp16/bfloat16 + GPU dispatch
+decord       = "^0.6.0"    # tiny video loader → torch tensor
+av           = "^10.0.0"   # (optional) extra codecs for decord/ffmpeg
+numpy = ">=2.1,<3.0"  # if not already present
 
 # --- GPU wheels ---
 torch = { version = "2.6.0+cu118", source = "pytorch-cu118" }
