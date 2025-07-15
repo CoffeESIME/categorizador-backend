@@ -1,37 +1,38 @@
-[project]
-name = "categorizador-backend"
-version = "0.1.0"
-description = ""
-authors = [
-    {name = "Fabian",email = "heromfabian@gmail.com"}
-]
-readme = "README.md"
-requires-python = ">=3.13,<4.0"
-dependencies = [
-    "django (>=5.1.6,<6.0.0)",
-    "djangorestframework (>=3.15.2,<4.0.0)",
-    "pydantic (>=2.10.6,<3.0.0)",
-    "pytesseract (>=0.3.13,<0.4.0)",
-    "pillow (>=11.1.0,<12.0.0)",
-    "django-cors-headers (>=4.7.0,<5.0.0)",
-    "ollama (>=0.4.7,<0.5.0)",
-    "langchain-ollama (>=0.2.3,<0.3.0)",
-    "langchain-text-splitters (>=0.3.6,<0.4.0)",
-    "neo4j (>=5.28.1,<6.0.0)",
-    "weaviate (>=0.1.2,<0.2.0)",
-    "weaviate-client (>=4.11.3,<5.0.0)",
-    "clip @ git+https://github.com/openai/CLIP.git",
-    "ftfy (>=6.3.1,<7.0.0)",
-    "regex (>=2024.11.6,<2025.0.0)",
-    "tqdm (>=4.67.1,<5.0.0)",
-    "langchain-community (>=0.3.22,<0.4.0)",
-    "pypdf (>=5.4.0,<6.0.0)"
-]
-
+# pyproject.toml
 [tool.poetry]
-packages = [{include = "categorizador_backend", from = "src"}]
+name        = "categorizador-backend"
+version     = "0.1.0"
+description = ""
+authors     = ["Fabian <heromfabian@gmail.com>"]
+readme      = "README.md"
+packages    = [{ include = "categorizador_backend", from = "src" }]
+[tool.poetry.dependencies]
+python = "^3.11"      
+django = "^5.1.6"
+djangorestframework = "^3.15.2"
+pydantic = "^2.10.6"
+pytesseract = "^0.3.13"
+pillow = "^11.1"
+django-cors-headers = "^4.7"
+ollama = "^0.4.7"
+langchain-ollama = "^0.2.3"
+langchain-text-splitters = "^0.3.6"
+neo4j = "^5.28.1"
+weaviate = "^0.1.2"
+weaviate-client = "^4.11.3"
+clip = { git = "https://github.com/openai/CLIP.git" }
+ftfy = "^6.3.1"
+regex = "^2024.11.6"
+tqdm = "^4.67.1"
+langchain-community = "^0.3.22"
+pypdf = "^5.4.0"
 
+# --- GPU wheels ---
+torch = { version = "2.6.0+cu118", source = "pytorch-cu118" }
+torchvision = { version = "0.21.0+cu118", source = "pytorch-cu118" }
+torchaudio = { version = "2.6.0+cu118", source = "pytorch-cu118" }
 
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+[[tool.poetry.source]]
+name     = "pytorch-cu118"
+url      = "https://download.pytorch.org/whl/cu118"
+priority = "explicit"     
