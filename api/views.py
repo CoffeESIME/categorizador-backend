@@ -20,6 +20,8 @@ from .services.processing import (
     process_image_with_description,
     process_ocr_with_image,
     process_text_embeddings,
+    process_audio_file,
+    process_video_file,
 )
 
 
@@ -126,6 +128,38 @@ class MetadataProcessingView(APIView):
                             results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
                             continue
                         process_ocr_with_image(file_id, meta, image_path)
+
+                    elif embedding_type in ["audio", "audio_only"]:
+                        audio_path = uploads_dir
+                        if not audio_path or not os.path.exists(audio_path):
+                            results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
+                            continue
+                        process_audio_file(file_id, meta, audio_path)
+                        embedding = [1]
+
+                    elif embedding_type in ["audio_text", "audio+text"]:
+                        audio_path = uploads_dir
+                        if not audio_path or not os.path.exists(audio_path):
+                            results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
+                            continue
+                        process_audio_file(file_id, meta, audio_path, transcribe=True)
+                        embedding = [1]
+
+                    elif embedding_type in ["video_audio", "video+audio"]:
+                        video_path = uploads_dir
+                        if not video_path or not os.path.exists(video_path):
+                            results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
+                            continue
+                        process_video_file(file_id, meta, video_path, include_audio=True)
+                        embedding = [1]
+
+                    elif embedding_type == "video":
+                        video_path = uploads_dir
+                        if not video_path or not os.path.exists(video_path):
+                            results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
+                            continue
+                        process_video_file(file_id, meta, video_path)
+                        embedding = [1]
 
                     else:
                         embedding = process_text_embeddings(meta)
