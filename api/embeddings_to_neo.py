@@ -246,6 +246,115 @@ def guardar_imagen_en_weaviate(
         print(f"Error al guardar en Weaviate (Imagenes) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}")
         print(f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}")
         raise
+
+def guardar_video_en_weaviate(
+    client,
+    *,
+    meta: dict,
+    vec_video: list[float] | None = None,
+    vec_audio: list[float] | None = None,
+    vec_text: list[float] | None = None,
+) -> str | None:
+
+    propiedades_for_weaviate = {k: v for k, v in meta.items() if v is not None}
+
+    if "doc_id" in propiedades_for_weaviate:
+        propiedades_for_weaviate["doc_id"] = str(propiedades_for_weaviate["doc_id"])
+    else:
+        print(
+            f"ADVERTENCIA: 'doc_id' no encontrado en meta para guardar_video_en_weaviate. Meta: {meta}"
+        )
+
+    vectores = {}
+    if vec_video is not None:
+        vectores["vector_video"] = vec_video
+    if vec_audio is not None:
+        vectores["vector_audio"] = vec_audio
+    if vec_text is not None:
+        vectores["vector_text"] = vec_text
+
+    try:
+        videos_collection = client.collections.get("Video")
+
+        print(
+            f"DEBUG: Enviando a Weaviate (Video) propiedades: {propiedades_for_weaviate}"
+        )
+
+        if not vectores:
+            insert_result_uuid = videos_collection.data.insert(properties=propiedades_for_weaviate)
+        else:
+            insert_result_uuid = videos_collection.data.insert(
+                properties=propiedades_for_weaviate, vector=vectores
+            )
+
+        print(
+            f"[OK] Objeto guardado en Video {propiedades_for_weaviate.get('doc_id')} · UUID: {insert_result_uuid}"
+        )
+        return str(insert_result_uuid)
+
+    except Exception as e:
+        print(
+            f"Error al guardar en Weaviate (Video) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}"
+        )
+        print(
+            f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}"
+        )
+        raise
+
+
+
+def guardar_audio_en_weaviate(
+    client,
+    *,
+    meta: dict,
+    vec_audio: list[float] | None = None,
+    vec_text: list[float] | None = None,
+) -> str | None:
+
+    propiedades_for_weaviate = {k: v for k, v in meta.items() if v is not None}
+
+    if "doc_id" in propiedades_for_weaviate:
+        propiedades_for_weaviate["doc_id"] = str(propiedades_for_weaviate["doc_id"])
+    else:
+        print(
+            f"ADVERTENCIA: 'doc_id' no encontrado en meta para guardar_audio_en_weaviate. Meta: {meta}"
+        )
+
+    vectores = {}
+    if vec_audio is not None:
+        vectores["vector_audio"] = vec_audio
+    if vec_text is not None:
+        vectores["vector_text"] = vec_text
+
+    try:
+        audio_collection = client.collections.get("Audio")
+
+        print(
+            f"DEBUG: Enviando a Weaviate (Audio) propiedades: {propiedades_for_weaviate}"
+        )
+
+        if not vectores:
+            insert_result_uuid = audio_collection.data.insert(properties=propiedades_for_weaviate)
+        else:
+            insert_result_uuid = audio_collection.data.insert(
+                properties=propiedades_for_weaviate, vector=vectores
+            )
+
+        print(
+            f"[OK] Objeto guardado en Audio {propiedades_for_weaviate.get('doc_id')} · UUID: {insert_result_uuid}"
+        )
+        return str(insert_result_uuid)
+
+    except Exception as e:
+        print(
+            f"Error al guardar en Weaviate (Audio) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}"
+        )
+        print(
+            f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}"
+        )
+        raise
+
+
 def limpiar_meta(meta: dict) -> dict:
     meta_copy = meta.copy()
     if "id" in meta_copy:
