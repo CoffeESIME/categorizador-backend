@@ -9,7 +9,8 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
 from django.conf import settings
-
+from langchain_ollama import OllamaEmbeddings 
+from api.embeddings_to_neo import store_embedding
 from .serializers import UploadedFileSerializer
 from .models import UploadedFile
 from .neo4j_client import driver
