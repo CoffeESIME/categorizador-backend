@@ -14,6 +14,7 @@ from django.conf import settings
 # Importamos ChatOllama y HumanMessage
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
+from api.services.processing import _transcribe_audio
 
 def image_to_base64(image_path):
     """
@@ -244,6 +245,24 @@ def build_ocr_analysis_prompt(extracted_text: str, custom_prompt: str = None):
     messages.append(user_message)
     return messages
 
+def build_audio_analysis_prompt(transcribed_text: str, custom_prompt: str | None = None):
+    """Construye un prompt para analizar texto transcrito de un audio."""
+    prompt_text = custom_prompt or (
+        "Analiza la siguiente transcripción de audio y devuelve un JSON estructurado "
+        "con información relevante."
+    )
+
+    full_prompt = f"{prompt_text}\n\nTexto:\n{transcribed_text}"
+
+    messages = []
+    system_message = HumanMessage(
+        content=build_structural_prompt("text")
+    )
+    messages.append(system_message)
+    user_message = HumanMessage(content=full_prompt)
+    messages.append(user_message)
+    return messages
+
 def extract_json_from_response(response_str: str):
     """
     Intenta extraer un bloque de JSON de la respuesta:
@@ -292,20 +311,21 @@ class LLMProcessView(APIView):
     
     Tareas soportadas:
     - text: Procesa un prompt de texto y devuelve una respuesta estructurada en JSON.
-    - image_description: Envía una imagen (convertida a base64) para obtener una descripción estructurada con campos dinámicos 
+    - image_description: Envía una imagen (convertida a base64) para obtener una descripción estructurada con campos dinámicos
       (por ejemplo, description, tags, topics, style, etc.) usando un prompt few-shot.
     - ocr: Extrae texto de una imagen. Se puede elegir entre:
          - tesseract: Extrae el texto usando Tesseract y luego lo procesa con un LLM para obtener JSON estructurado.
-         - llm: Utiliza un modelo de visión (ocr_model) para extraer el texto de la imagen y, luego, un modelo de análisis 
+         - llm: Utiliza un modelo de visión (ocr_model) para extraer el texto de la imagen y, luego, un modelo de análisis
            (analysis_model) para procesar ese texto y generar una salida estructurada en JSON.
+    - music: Transcribe un archivo de audio y analiza el texto resultante con un LLM.
     
     Parámetros (JSON):
-      - task: "text", "image_description" o "ocr" (por defecto "text")
+      - task: "text", "image_description", "ocr" o "music" (por defecto "text")
       - temperature: (opcional) valor para la temperatura, por defecto 0.5
       - max_tokens: (opcional) cantidad máxima de tokens, por defecto 100
       - input_text: (para "text") el prompt de texto
-      - file_url: (para "image_description" y "ocr") la URL o ruta relativa del archivo de imagen
-      - prompt: (opcional) prompt específico para "image_description" o para analizar el texto extraído en OCR
+      - file_url: (para "image_description", "ocr" y "music") la URL o ruta relativa del archivo
+      - prompt: (opcional) prompt específico para "image_description", para analizar el texto extraído en OCR o la transcripción de audio
       - ocr_method: (para "ocr") "tesseract" o "llm" (por defecto "tesseract")
       - ocr_model: (para "ocr" con método "llm") modelo a usar para extraer texto de la imagen (por defecto "llava:34b")
       - analysis_model: (para "ocr" con método "llm") modelo a usar para analizar el texto extraído (por defecto "deepseek-r1:32b")
@@ -376,7 +396,41 @@ class LLMProcessView(APIView):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
                 return Response(parsed_result, status=status.HTTP_200_OK)
-            
+
+            elif task == "music":
+                file_url = request.data.get("file_url")
+                if not file_url:
+                    return Response({"error": "El campo file_url es requerido para la tarea 'music'."},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                file_name = os.path.basename(file_url)
+                file_path = os.path.join(downloads_dir, 'audio', file_name)
+                if not os.path.exists(file_path):
+                    return Response({"error": "Archivo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+                transcription = _transcribe_audio(file_path)
+                analysis_prompt = request.data.get(
+                    "prompt",
+                    "Analiza la siguiente transcripción de audio y devuelve un JSON estructurado."
+                )
+
+                prompt = build_audio_analysis_prompt(transcription, analysis_prompt)
+                llm = ChatOllama(
+                    base_url=base_url,
+                    model=request.data.get("model", settings.DEFAULT_LLM_MODEL),
+                    temperature=temperature,
+                    num_predict=max_tokens,
+                )
+                result = llm.invoke(prompt)
+                response_str = result.content if hasattr(result, "content") else result
+                parsed_result = extract_json_from_response(response_str)
+                if not parsed_result:
+                    return Response(
+                        {"error": "Error al parsear la respuesta JSON.", "raw": response_str},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                parsed_result["raw_transcription"] = transcription
+                return Response(parsed_result, status=status.HTTP_200_OK)
+
             elif task == "ocr":
                 file_url = request.data.get("file_url")
                 if not file_url:
@@ -467,7 +521,7 @@ class LLMProcessView(APIView):
                     return Response({"error": "El valor de ocr_method no es válido. Use 'tesseract' o 'llm'."},
                                     status=status.HTTP_400_BAD_REQUEST)
             else:
-                return Response({"error": "Tarea no soportada. Use 'text', 'image_description' u 'ocr'."},
+                return Response({"error": "Tarea no soportada. Use 'text', 'image_description', 'ocr' o 'music'."},
                                 status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
