@@ -74,5 +74,24 @@ def short_query(q: str) -> str:
         rewritten = q
     return safe_for_clip(rewritten)
 
-CLASSES = dict(text="Textos", pdf="PdfChunks", image="Imagenes")
-IMAGE_VECTOR_FIELDS = dict(clip="vector_clip", ocr="vector_ocr", des="vector_des")
+CLASSES = dict(
+    text="Textos",
+    pdf="PdfChunks",
+    image="Imagenes",
+    audio="Audio",
+    video="Video",
+)
+
+IMAGE_VECTOR_FIELDS = dict(
+    clip="vector_clip",
+    ocr="vector_ocr",
+    des="vector_des",
+)
+
+# Nombres de los vectores para audio y video
+AUDIO_VECTOR_FIELDS = dict(audio="vector_audio", text="vector_text")
+VIDEO_VECTOR_FIELDS = dict(
+    video="vector_video",
+    audio="vector_audio",
+    text="vector_text",
+)
