@@ -5,6 +5,7 @@ import base64
 from io import BytesIO
 from PIL import Image
 import pytesseract
+from moviepy.editor import VideoFileClip
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -15,6 +16,18 @@ from django.conf import settings
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 from api.services.processing import _transcribe_audio
+
+
+def extract_frames(video_path: str, every_n_seconds: int = 2):
+    """Extrae fotogramas de un video cada ``every_n_seconds`` segundos."""
+    clip = VideoFileClip(video_path)
+    duration = int(clip.duration)
+    frames = []
+    for t in range(0, duration, every_n_seconds):
+        frame = clip.get_frame(t)
+        frames.append(Image.fromarray(frame))
+    clip.close()
+    return frames
 
 def image_to_base64(image_path):
     """
@@ -263,6 +276,29 @@ def build_audio_analysis_prompt(transcribed_text: str, custom_prompt: str | None
     messages.append(user_message)
     return messages
 
+
+def build_video_summary_prompt(frame_descriptions, context: str = ""):
+    """Construye un prompt para resumir descripciones de fotogramas."""
+    joined = "\n".join(
+        f"Frame {idx+1}: {desc}" for idx, desc in enumerate(frame_descriptions)
+    )
+    base_prompt = (
+        "Analiza las siguientes descripciones de un video y genera un resumen en JSON "
+        "con campos como description, tags, topics, style, color_palette y composition."
+    )
+    if context:
+        base_prompt += f"\nContexto adicional: {context}"
+    full_prompt = f"{base_prompt}\n\n{joined}"
+
+    messages = []
+    system_message = HumanMessage(
+        content=build_structural_prompt("image")
+    )
+    messages.append(system_message)
+    user_message = HumanMessage(content=full_prompt)
+    messages.append(user_message)
+    return messages
+
 def extract_json_from_response(response_str: str):
     """
     Intenta extraer un bloque de JSON de la respuesta:
@@ -318,9 +354,10 @@ class LLMProcessView(APIView):
          - llm: Utiliza un modelo de visión (ocr_model) para extraer el texto de la imagen y, luego, un modelo de análisis
            (analysis_model) para procesar ese texto y generar una salida estructurada en JSON.
     - music: Transcribe un archivo de audio y analiza el texto resultante con un LLM.
+    - video: Analiza fotogramas de un video con un modelo de visión y genera un resumen en JSON.
     
     Parámetros (JSON):
-      - task: "text", "image_description", "ocr" o "music" (por defecto "text")
+      - task: "text", "image_description", "ocr", "music" o "video" (por defecto "text")
       - temperature: (opcional) valor para la temperatura, por defecto 0.5
       - max_tokens: (opcional) cantidad máxima de tokens, por defecto 100
       - input_text: (para "text") el prompt de texto
@@ -396,6 +433,66 @@ class LLMProcessView(APIView):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
                 return Response(parsed_result, status=status.HTTP_200_OK)
+
+            elif task == "video":
+                file_url = request.data.get("file_url")
+                if not file_url:
+                    return Response({"error": "El campo file_url es requerido para la tarea 'video'."},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                file_name = os.path.basename(file_url)
+                file_path = os.path.join(downloads_dir, 'videos', file_name)
+                if not os.path.exists(file_path):
+                    return Response({"error": "Archivo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+                frame_interval = int(request.data.get("frame_interval", 2))
+                frame_prompt = request.data.get("prompt", "Describe brevemente el fotograma.")
+                context = request.data.get("context", "")
+
+                frames = extract_frames(file_path, frame_interval)
+                if not frames:
+                    return Response({"error": "No se pudieron extraer fotogramas del video."},
+                                    status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+                vision_model = request.data.get("model", settings.IMAGE_DESCRIPTION_MODEL)
+                vision_llm = ChatOllama(
+                    base_url=base_url,
+                    model=vision_model,
+                    temperature=temperature,
+                    num_predict=max_tokens,
+                )
+
+                descriptions = []
+                for frame in frames:
+                    buf = BytesIO()
+                    frame.convert("RGB").save(buf, format="JPEG")
+                    frame_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                    msg = build_few_shot_image_prompt(frame_prompt, frame_b64, "image")
+                    r = vision_llm.invoke(msg)
+                    content = r.content if hasattr(r, "content") else r
+                    parsed = extract_json_from_response(content)
+                    if parsed and isinstance(parsed, dict) and parsed.get("description"):
+                        descriptions.append(parsed["description"])
+                    else:
+                        descriptions.append(content.strip())
+
+                summary_prompt = build_video_summary_prompt(descriptions, context)
+                analysis_model = request.data.get("analysis_model", settings.DEFAULT_LLM_MODEL)
+                summary_llm = ChatOllama(
+                    base_url=base_url,
+                    model=analysis_model,
+                    temperature=temperature,
+                    num_predict=max_tokens,
+                )
+                summary_result = summary_llm.invoke(summary_prompt)
+                response_str = summary_result.content if hasattr(summary_result, "content") else summary_result
+                parsed_summary = extract_json_from_response(response_str)
+                if not parsed_summary:
+                    return Response(
+                        {"error": "Error al parsear la respuesta JSON.", "raw": response_str},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+                parsed_summary["frame_descriptions"] = descriptions
+                return Response(parsed_summary, status=status.HTTP_200_OK)
 
             elif task == "music":
                 file_url = request.data.get("file_url")
@@ -521,7 +618,7 @@ class LLMProcessView(APIView):
                     return Response({"error": "El valor de ocr_method no es válido. Use 'tesseract' o 'llm'."},
                                     status=status.HTTP_400_BAD_REQUEST)
             else:
-                return Response({"error": "Tarea no soportada. Use 'text', 'image_description', 'ocr' o 'music'."},
+                return Response({"error": "Tarea no soportada. Use 'text', 'image_description', 'ocr', 'music' o 'video'."},
                                 status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
