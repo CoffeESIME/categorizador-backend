@@ -353,7 +353,7 @@ class LLMProcessView(APIView):
          - tesseract: Extrae el texto usando Tesseract y luego lo procesa con un LLM para obtener JSON estructurado.
          - llm: Utiliza un modelo de visión (ocr_model) para extraer el texto de la imagen y, luego, un modelo de análisis
            (analysis_model) para procesar ese texto y generar una salida estructurada en JSON.
-    - music: Transcribe un archivo de audio y analiza el texto resultante con un LLM.
+    - audio: Transcribe un archivo de audio y analiza el texto resultante con un LLM.
     - video: Analiza fotogramas de un video con un modelo de visión y genera un resumen en JSON.
     
     Parámetros (JSON):
@@ -494,7 +494,7 @@ class LLMProcessView(APIView):
                 parsed_summary["frame_descriptions"] = descriptions
                 return Response(parsed_summary, status=status.HTTP_200_OK)
 
-            elif task == "music":
+            elif task == "audio":
                 file_url = request.data.get("file_url")
                 if not file_url:
                     return Response({"error": "El campo file_url es requerido para la tarea 'music'."},

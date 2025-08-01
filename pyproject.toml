@@ -40,7 +40,7 @@ ctranslate2 = { version = "^4.3.0", extras = ["cpu-avx2"] }
 torch = { version = "2.6.0+cu118", source = "pytorch-cu118" }
 torchvision = { version = "0.21.0+cu118", source = "pytorch-cu118" }
 torchaudio = { version = "2.6.0+cu118", source = "pytorch-cu118" }
-moviepy = "^2.2.1"
+moviepy = "1.0.3"
 
 [[tool.poetry.source]]
 name     = "pytorch-cu118"
