@@ -135,13 +135,13 @@ CSRF_TRUSTED_ORIGINS = ['http://localhost:3000']
 
 # Default models and LLM endpoints used across the project
 DEFAULT_EMBED_MODEL = os.getenv("DEFAULT_EMBED_MODEL", "granite-embedding:latest")
-DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "mistral")
+DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "deepseek-r1:14b")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
 
 # Specific models for certain tasks
 IMAGE_DESCRIPTION_MODEL = os.getenv("IMAGE_DESCRIPTION_MODEL", "llava:34b")
 OCR_MODEL = os.getenv("OCR_MODEL", "llava:34b")
-OCR_ANALYSIS_MODEL = os.getenv("OCR_ANALYSIS_MODEL", "deepseek-r1:32b")
+OCR_ANALYSIS_MODEL = os.getenv("OCR_ANALYSIS_MODEL", "deepseek-r1:14b")
 TESSERACT_ANALYSIS_MODEL = os.getenv("TESSERACT_ANALYSIS_MODEL", "deepseek-r1:14b")
 
 # Weaviate configuration
@@ -151,3 +151,35 @@ WEAVIATE_HTTP_SECURE = os.getenv("WEAVIATE_HTTP_SECURE", "false").lower() == "tr
 WEAVIATE_GRPC_HOST = os.getenv("WEAVIATE_GRPC_HOST", "localhost")
 WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", 50051))
 WEAVIATE_GRPC_SECURE = os.getenv("WEAVIATE_GRPC_SECURE", "false").lower() == "true"
+
+
+# settings.py
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,   # respeta los loggers ya creados
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "formatters": {
+        "verbose": {
+            "format": (
+                "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+            ),
+        },
+    },
+
+    # 1️⃣   ROOT logger – captura TODO
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",      # o "DEBUG" si quieres aún más verbosidad
+    },
+
+    # 2️⃣   Opcional: sube algunos componentes a WARNING
+    "loggers": {
+        "django.server": {"level": "WARNING"},      # evita duplicados runserver
+        "django.db.backends": {"level": "WARNING"}, # quita SQL en producción
+    },
+}

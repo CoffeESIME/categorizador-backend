@@ -110,7 +110,7 @@ class MetadataProcessingView(APIView):
 
                 embedding = []
                 uploads_dir = os.path.join('uploads', meta.get("file_location"))
-
+                print("data", meta, embedding_type)
                 try:
                     if embedding_type == "pdf":
                         process_pdf(file_id, meta)
@@ -129,7 +129,8 @@ class MetadataProcessingView(APIView):
                             continue
                         process_ocr_with_image(file_id, meta, image_path)
 
-                    elif embedding_type in ["audio", "audio_only"]:
+                    elif embedding_type == "audio":
+                        print("here", )
                         audio_path = uploads_dir
                         if not audio_path or not os.path.exists(audio_path):
                             results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})

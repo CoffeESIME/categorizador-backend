@@ -16,6 +16,99 @@ from django.conf import settings
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 from api.services.processing import _transcribe_audio
+# al inicio del archivo (después de los imports estándar)
+import logging
+
+logger = logging.getLogger(__name__)          # usa el nombre del módulo
+logger.setLevel(logging.INFO)
+
+# evita duplicar handlers si Django ya configuró logging
+if not logger.handlers:
+    handler = logging.StreamHandler()         # STDERR – visible en gunicorn o runserver
+    fmt = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    handler.setFormatter(logging.Formatter(fmt))
+    logger.addHandler(handler)
+# -----------------------------------------------------------------------------
+# VIDEO PIPELINE
+# -----------------------------------------------------------------------------
+def pil_to_b64(img: Image.Image) -> str:
+    """
+    Convierte un objeto PIL.Image en una cadena base64 (JPEG).
+    Devuelve: str → "iVBORw0KGgoAAA..."
+    """
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=90)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+
+# video_llm_processor.py  (o donde tengas el helper)
+# ---------------------------------------------------------------------------
+# Función principal (versión que aplana el JSON)
+# ---------------------------------------------------------------------------
+
+def process_video_llm(
+    file_path: str,
+    *,
+    frame_interval: int = 2,
+    frame_prompt: str = "Describe brevemente el fotograma.",
+    context: str = "",
+    base_url: str,
+    vision_model: str,
+    analysis_model: str,
+    temperature: float = 0.5,
+    max_tokens: int = 2048,
+) -> dict:
+    """
+    Devuelve un dict con:
+        description, tags, topics, style, color_palette, composition, …
+        frame_descriptions: [str, str, …]
+
+    @raise FileNotFoundError, RuntimeError, ValueError
+    """
+    logger.info("⏩ [VIDEO] Procesando archivo=%s", file_path)
+
+    # 1) Fotogramas
+    frames = extract_frames(file_path, every_n_seconds=frame_interval)
+    if not frames:
+        raise RuntimeError("No se pudieron extraer fotogramas")
+    logger.info("🔍 [VIDEO] %d frames extraídos", len(frames))
+
+    # 2) Descripción de frames
+    vision_llm = ChatOllama(
+        base_url=base_url,
+        model=vision_model,
+        temperature=temperature,
+        num_predict=max_tokens,
+    )
+    frame_desc: list[str] = []
+    for f in frames:
+        b64 = pil_to_b64(f)
+        prompt = build_few_shot_image_prompt(frame_prompt, b64, "image")
+        resp = vision_llm.invoke(prompt)
+        txt = resp.content if hasattr(resp, "content") else resp
+        parsed = extract_json_from_response(txt)
+        frame_desc.append(parsed.get("description") if parsed else txt.strip())
+
+    # 3) Resumen
+    summary_llm = ChatOllama(
+        base_url=base_url,
+        model=analysis_model,
+        temperature=temperature,
+        num_predict=max_tokens,
+    )
+    summary_prompt = build_video_summary_prompt(frame_desc, context)
+    raw = summary_llm.invoke(summary_prompt)
+    txt = raw.content if hasattr(raw, "content") else raw
+    summary_json = extract_json_from_response(txt)
+    if summary_json is None:
+        raise ValueError("Modelo no devolvió JSON válido para el resumen")
+
+    logger.info("🎉 [VIDEO] Resumen listo. Devolviendo estructura aplanada")
+
+    # 🚩 UNION: metemos el resumen al mismo nivel
+    summary_json["frame_descriptions"] = frame_desc
+    return summary_json
 
 
 def extract_frames(video_path: str, every_n_seconds: int = 2):
@@ -44,163 +137,114 @@ def image_to_base64(image_path):
     except Exception as e:
         raise Exception(f"Error al convertir la imagen: {str(e)}")
 
-def build_structural_prompt(content_type="generic"):
+def build_structural_prompt(content_type: str = "generic") -> str:
     """
-    Construye un mensaje del sistema para una tarea específica que requiere respuesta estructurada.
-    Devuelve un string con instrucciones para que el modelo responda únicamente en formato JSON.
+    Devuelve instrucciones de sistema para que TODOS los modelos respondan
+    con un JSON consistente.  Agrega campos opcionales según content_type.
     """
-    base_structure = (
-        "Eres un asistente analítico. Tu respuesta debe ser únicamente un JSON válido sin comentarios adicionales. "
-        "El JSON debe incluir campos relevantes según el tipo de contenido. "
-        "Asegúrate de que el JSON sea válido y no contenga texto extra."
+    base = (
+        "Eres un asistente analítico. TU RESPUESTA DEBE SER exclusivamente "
+        "un JSON VÁLIDO sin comentarios ni texto extra. Utiliza SIEMPRE este "
+        "núcleo mínimo de campos, en este orden:\n\n"
+        "{\n"
+        '  "description":  <string>,                # descripción principal\n'
+        '  "tags":         <array[string]>,         # etiquetas clave\n'
+        '  "topics":       <array[string]>,         # temas o categorías\n'
+        '  "content_type": "<image|text|ocr|audio|music|video|other>"\n'
     )
-    
+
+    extras: dict[str, str] = {
+        "image": (
+            '  ,"style":         <string>,            # estilo visual\n'
+            '  ,"color_palette": <array[string]>,     # opcional\n'
+            '  ,"composition":   <string>             # opcional\n'
+        ),
+        "audio": (
+            '  ,"genre":   <string>,                  # ej. "rock", "clásica"\n'
+            '  ,"mood":    <string>,                  # ej. "enérgico", "melancólico"\n'
+            '  ,"tempo":   <int>,                     # BPM estimados\n'
+            '  ,"language":<string>                   # idioma dominante\n'
+        ),
+        "music": (  # alias de audio
+            '  ,"genre":   <string>,\n'
+            '  ,"mood":    <string>,\n'
+            '  ,"tempo":   <int>,\n'
+            '  ,"language":<string>\n'
+        ),
+        "text": (
+            '  ,"sentiment_word":  <string>,          # "positivo"|…\n'
+            '  ,"sentiment_value": <float>            # -1.0 … 1.0\n'
+        ),
+        "ocr": (  # mismos extras que text
+            '  ,"sentiment_word":  <string>,\n'
+            '  ,"sentiment_value": <float>\n'
+        ),
+    }
+
+    # Cierra el objeto JSON correctamente
+    base_close = "}\n\n"
+
+    # Construye bloque de extras si aplica
+    extra_block = extras.get(content_type, "")
+    if extra_block and extra_block.startswith("  ,"):
+        base = base.rstrip("\n") + extra_block + "\n"
+
+    # Ejemplos didácticos para el modelo
     if content_type == "image":
-        prompt = base_structure + (
-            "1) Responde con un JSON EXACTO con el siguiente esquema:\n\n"
-            "{\n"
-            "  - \"description\": Una descripción detallada de la imagen.\n"
-            "  - \"tags\": Un array de etiquetas relevantes.\n"
-            "  - \"topics\": Un array de temas relacionados.\n"
-            "  - \"style\": Una descripción del estilo visual de la imagen.\n"
-            "  - \"color_palette\": (Opcional) Los colores predominantes en la imagen.\n"
-            "  - \"composition\": (Opcional) Notas sobre la composición de la imagen.\n"
-            "}\n\n"
-            "2) No añadas comentarios ni texto adicional fuera del JSON final. Responde únicamente con el JSON que cumpla EXACTAMENTE el esquema indicado.\n\n"
+        examples = (
             "Ejemplo 1:\n"
             "{\n"
-            "  \"description\": \"A vibrant sunset over a mountain range with a clear sky.\",\n"
-            "  \"tags\": [\"sunset\", \"mountains\", \"landscape\"],\n"
-            "  \"topics\": [\"nature\", \"landscape\", \"sunset\"],\n"
-            "  \"style\": \"Realistic with warm color tones\",\n"
-            "  \"color_palette\": [\"orange\", \"red\", \"purple\"],\n"
-            "  \"composition\": \"Balanced composition with the horizon at the lower third.\"\n"
+            '  "description": "Atardecer vibrante sobre montañas.",\n'
+            '  "tags": ["sunset", "mountains"],\n'
+            '  "topics": ["nature"],\n'
+            '  "content_type": "image",\n'
+            '  "style": "Realista",\n'
+            '  "color_palette": ["orange", "purple"]\n'
             "}\n\n"
             "Ejemplo 2:\n"
             "{\n"
-            "  \"description\": \"Una ilustración minimalista de una ciudad futurista en blanco y negro.\",\n"
-            "  \"tags\": [\"futurista\", \"ciudad\", \"minimalista\"],\n"
-            "  \"topics\": [\"urbanismo\", \"arte digital\"],\n"
-            "  \"style\": \"Minimalista y contrastada\",\n"
-            "  \"color_palette\": [\"black\", \"white\"],\n"
-            "  \"composition\": \"La composición se centra en líneas geométricas y simetría.\"\n"
+            '  "description": "Ilustración minimalista en B/N.",\n'
+            '  "tags": ["minimalism"],\n'
+            '  "topics": ["art"],\n'
+            '  "content_type": "image",\n'
+            '  "style": "Minimalista"\n'
             "}\n"
         )
-    elif content_type == "ocr":
-        prompt = base_structure + (
-            "Eres un sistema de extracción de información de texto. Sigue EXACTAMENTE las siguientes instrucciones y responde únicamente con un JSON válido que cumpla este esquema:\n\n"
-            "1) Responde con un JSON EXACTO con el siguiente esquema:\n\n"
-            "{\n"
-            "  \"title\": \"Título del contenido (si existe; en caso contrario, una cadena vacía)\",\n"
-            "  \"tags\": [\"Etiqueta1\", \"Etiqueta2\", ...],\n"
-            "  \"author\": \"Autor (completa si es parcial, por ejemplo, 'Pascal' se transforma en 'Blaise Pascal')\",\n"
-            "  \"work\": \"Obra o fuente, o una cadena vacía\",\n"
-            "  \"languages\": [\"Código de idioma (ej. 'es', 'en', 'fr', etc.)\"],\n"
-            "  \"sentiment_word\": \"Análisis del sentimiento en palabras (ej. 'positivo', 'negativo', 'neutral')\",\n"
-            "  \"sentiment_value\": \"Un número entre -1 y 1, donde -1 es extremadamente negativo, 0 es neutral y 1 es extremadamente positivo. Devuelve solamente el número.\",\n"
-            "  \"analysis\": \"Un análisis profundo del contenido.\",\n"
-            "  \"categories\": [\"Categoría o tema 1\", \"Categoría o tema 2\", ...],\n"
-            "  \"keywords\": [\"Palabra clave 1\", \"Palabra clave 2\", ...],\n"
-            "  \"content_type\": \"Tipo de contenido (por ejemplo, 'artículo', 'cita', etc.)\",\n"
-            "  \"multilingual\": false, // Si es false, incluir 'content'. Si es true, NO incluir 'content' y usar 'eng_content', 'es_content', etc.\n"
-            "  \"content\": \"El texto proporcionado, limpio y sin elementos irrelevantes. Si hay fragmentos sin sentido, elimínalos.\"\n"
-            "}\n\n"
-            "2) No añadas comentarios ni texto adicional fuera del JSON final.\n\n"
+    elif content_type in ("audio", "music"):
+        examples = (
             "Ejemplo 1:\n"
             "{\n"
-            "  \"title\": \"El poder del cambio\",\n"
-            "  \"tags\": [\"motivación\", \"cambio\"],\n"
-            "  \"author\": \"Gabriel García Márquez\",\n"
-            "  \"work\": \"Cuentos Cortos\",\n"
-            "  \"languages\": [\"es\"],\n"
-            "  \"sentiment_word\": \"positivo\",\n"
-            "  \"sentiment_value\": 0.7,\n"
-            "  \"analysis\": \"Inspira reflexión y destaca la transformación personal.\",\n"
-            "  \"categories\": [\"Inspiración\", \"Reflexión\"],\n"
-            "  \"keywords\": [\"cambio\", \"transformación\"],\n"
-            "  \"content_type\": \"artículo\",\n"
-            "  \"multilingual\": false,\n"
-            "  \"content\": \"El texto explora cómo los cambios en la vida pueden abrir nuevas oportunidades.\"\n"
+            '  "description": "Guitarras distorsionadas y batería rápida.",\n'
+            '  "tags": ["rock", "guitar"],\n'
+            '  "topics": ["music"],\n'
+            '  "content_type": "music",\n'
+            '  "genre": "rock",\n'
+            '  "mood": "enérgico",\n'
+            '  "tempo": 160,\n'
+            '  "language": "en"\n'
             "}\n\n"
             "Ejemplo 2:\n"
             "{\n"
-            "  \"title\": \"\",\n"
-            "  \"tags\": [\"cita\", \"motivación\"],\n"
-            "  \"author\": \"Nelson Mandela\",\n"
-            "  \"work\": \"\",\n"
-            "  \"languages\": [\"en\"],\n"
-            "  \"sentiment_word\": \"positivo\",\n"
-            "  \"sentiment_value\": 0.9,\n"
-            "  \"analysis\": \"Cita que enfatiza la perseverancia ante la adversidad.\",\n"
-            "  \"categories\": [\"Inspiración\", \"Citas\"],\n"
-            "  \"keywords\": [\"perseverancia\", \"motivación\"],\n"
-            "  \"content_type\": \"cita\",\n"
-            "  \"multilingual\": false,\n"
-            "  \"content\": \"It always seems impossible until it's done.\"\n"
+            '  "description": "Piano suave con cuerdas de fondo.",\n'
+            '  "tags": ["instrumental", "relax"],\n'
+            '  "topics": ["wellness"],\n'
+            '  "content_type": "music",\n'
+            '  "genre": "clásica",\n'
+            '  "mood": "calmado",\n'
+            '  "tempo": 70,\n'
+            '  "language": "instrumental"\n'
             "}\n"
         )
-    elif content_type == "text":
-        prompt = base_structure + (
-            "Eres un sistema de extracción de información de texto. Sigue EXACTAMENTE las siguientes instrucciones y responde únicamente con un JSON válido que cumpla este esquema:\n\n"
-            "1) Responde con un JSON EXACTO con el siguiente esquema:\n\n"
-            "{\n"
-            "  \"title\": \"Título del contenido (si existe; en caso contrario, una cadena vacía)\",\n"
-            "  \"tags\": [\"Etiqueta1\", \"Etiqueta2\", ...],\n"
-            "  \"author\": \"Autor (completa si es parcial, por ejemplo, 'Pascal' se transforma en 'Blaise Pascal')\",\n"
-            "  \"work\": \"Obra o fuente, o una cadena vacía\",\n"
-            "  \"languages\": [\"Código de idioma (ej. 'es', 'en', 'fr', etc.)\"],\n"
-            "  \"sentiment_word\": \"Análisis del sentimiento en palabras (ej. 'positivo', 'negativo', 'neutral')\",\n"
-            "  \"sentiment_value\": \"Un número entre -1 y 1, donde -1 es extremadamente negativo, 0 es neutral y 1 es extremadamente positivo. Devuelve solamente el número.\",\n"
-            "  \"analysis\": \"Un análisis profundo del contenido.\",\n"
-            "  \"categories\": [\"Categoría o tema 1\", \"Categoría o tema 2\", ...],\n"
-            "  \"keywords\": [\"Palabra clave 1\", \"Palabra clave 2\", ...],\n"
-            "  \"content_type\": \"Tipo de contenido (por ejemplo, 'artículo', 'cita', etc.)\",\n"
-            "  \"multilingual\": false, // Si es false, incluir 'content'. Si es true, NO incluir 'content' y usar 'eng_content', 'es_content', etc.\n"
-            "  \"content\": \"El texto proporcionado, limpio y sin elementos irrelevantes. Si hay fragmentos sin sentido, elimínalos.\"\n"
-            "}\n\n"
-            "2) No añadas comentarios ni texto adicional fuera del JSON final.\n\n"
-            "Ejemplo 1:\n"
-            "{\n"
-            "  \"title\": \"El poder del cambio\",\n"
-            "  \"tags\": [\"motivación\", \"cambio\"],\n"
-            "  \"author\": \"Gabriel García Márquez\",\n"
-            "  \"work\": \"Cuentos Cortos\",\n"
-            "  \"languages\": [\"es\"],\n"
-            "  \"sentiment_word\": \"positivo\",\n"
-            "  \"sentiment_value\": 0.7,\n"
-            "  \"analysis\": \"Inspira reflexión y destaca la transformación personal.\",\n"
-            "  \"categories\": [\"Inspiración\", \"Reflexión\"],\n"
-            "  \"keywords\": [\"cambio\", \"transformación\"],\n"
-            "  \"content_type\": \"artículo\",\n"
-            "  \"multilingual\": false,\n"
-            "  \"content\": \"El texto explora cómo los cambios en la vida pueden abrir nuevas oportunidades.\"\n"
-            "}\n\n"
-            "Ejemplo 2:\n"
-            "{\n"
-            "  \"title\": \"\",\n"
-            "  \"tags\": [\"cita\", \"motivación\"],\n"
-            "  \"author\": \"Nelson Mandela\",\n"
-            "  \"work\": \"\",\n"
-            "  \"languages\": [\"en\"],\n"
-            "  \"sentiment_word\": \"positivo\",\n"
-            "  \"sentiment_value\": 0.9,\n"
-            "  \"analysis\": \"Cita que enfatiza la perseverancia ante la adversidad.\",\n"
-            "  \"categories\": [\"Inspiración\", \"Citas\"],\n"
-            "  \"keywords\": [\"perseverancia\", \"motivación\"],\n"
-            "  \"content_type\": \"cita\",\n"
-            "  \"multilingual\": false,\n"
-            "  \"content\": \"It always seems impossible until it's done.\"\n"
-            "}\n"
-        )
-
     else:
-        prompt = base_structure + (
-            " Incluye campos relevantes según el contexto de la información analizada. "
-            "Asegúrate de incluir todos los datos que consideres importantes."
-        )
-    return prompt
+        examples = ""
 
-
+    return (
+        base + base_close +
+        "1) NO añadas texto fuera del JSON.\n"
+        "2) Sigue exactamente el esquema. Campos opcionales pueden omitirse "
+        "si no aplican, pero respeta el orden.\n\n" +
+        examples
+    )
 def build_few_shot_image_prompt(prompt_text: str, image_b64: str = None, prompt_type="image"):
     """
     Construye un prompt few-shot para tareas de imagen.
@@ -437,62 +481,28 @@ class LLMProcessView(APIView):
             elif task == "video":
                 file_url = request.data.get("file_url")
                 if not file_url:
-                    return Response({"error": "El campo file_url es requerido para la tarea 'video'."},
-                                    status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"error": "El campo file_url es requerido."}, 400)
+
                 file_name = os.path.basename(file_url)
-                file_path = os.path.join(downloads_dir, 'videos', file_name)
-                if not os.path.exists(file_path):
-                    return Response({"error": "Archivo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+                file_path = os.path.join(settings.MEDIA_ROOT, "videos", file_name)
 
-                frame_interval = int(request.data.get("frame_interval", 2))
-                frame_prompt = request.data.get("prompt", "Describe brevemente el fotograma.")
-                context = request.data.get("context", "")
-
-                frames = extract_frames(file_path, frame_interval)
-                if not frames:
-                    return Response({"error": "No se pudieron extraer fotogramas del video."},
-                                    status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-                vision_model = request.data.get("model", settings.IMAGE_DESCRIPTION_MODEL)
-                vision_llm = ChatOllama(
-                    base_url=base_url,
-                    model=vision_model,
-                    temperature=temperature,
-                    num_predict=max_tokens,
-                )
-
-                descriptions = []
-                for frame in frames:
-                    buf = BytesIO()
-                    frame.convert("RGB").save(buf, format="JPEG")
-                    frame_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-                    msg = build_few_shot_image_prompt(frame_prompt, frame_b64, "image")
-                    r = vision_llm.invoke(msg)
-                    content = r.content if hasattr(r, "content") else r
-                    parsed = extract_json_from_response(content)
-                    if parsed and isinstance(parsed, dict) and parsed.get("description"):
-                        descriptions.append(parsed["description"])
-                    else:
-                        descriptions.append(content.strip())
-
-                summary_prompt = build_video_summary_prompt(descriptions, context)
-                analysis_model = request.data.get("analysis_model", settings.DEFAULT_LLM_MODEL)
-                summary_llm = ChatOllama(
-                    base_url=base_url,
-                    model=analysis_model,
-                    temperature=temperature,
-                    num_predict=max_tokens,
-                )
-                summary_result = summary_llm.invoke(summary_prompt)
-                response_str = summary_result.content if hasattr(summary_result, "content") else summary_result
-                parsed_summary = extract_json_from_response(response_str)
-                if not parsed_summary:
-                    return Response(
-                        {"error": "Error al parsear la respuesta JSON.", "raw": response_str},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                try:
+                    result = process_video_llm(
+                        file_path,
+                        frame_interval = int(request.data.get("frame_interval", 2)),
+                        frame_prompt   = request.data.get("prompt", "Describe brevemente el fotograma."),
+                        context        = request.data.get("context", ""),
+                        base_url       = settings.LLM_BASE_URL,
+                        vision_model   = request.data.get("model", settings.IMAGE_DESCRIPTION_MODEL),
+                        analysis_model = request.data.get("analysis_model", settings.DEFAULT_LLM_MODEL),
+                        temperature    = float(request.data.get("temperature", 0.5)),
+                        max_tokens     = int(request.data.get("max_tokens", 2048)),
                     )
-                parsed_summary["frame_descriptions"] = descriptions
-                return Response(parsed_summary, status=status.HTTP_200_OK)
+                    return Response(result, 200)
+
+                except Exception as exc:
+                    logger.exception("💥 [VIDEO] Error procesando video")  # traza completa
+                    return Response({"error": str(exc)}, 500)
 
             elif task == "audio":
                 file_url = request.data.get("file_url")

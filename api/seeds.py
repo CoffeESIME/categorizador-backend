@@ -263,7 +263,10 @@ def seed_weaviate_schema() -> None:
         dict(
             name="Audio",
             description="Archivos de audio",
-            vectorizer_config=wc.Configure.Vectorizer.none(),
+                    vectorizer_config=[
+            wc.Configure.NamedVectors.none(name="vector_audio"),
+            wc.Configure.NamedVectors.none(name="vector_text"),
+        ],
             properties=[
                 wc.Property(name="title", data_type=wc.DataType.TEXT),
                 wc.Property(name="doc_id", data_type=wc.DataType.TEXT),
@@ -275,7 +278,11 @@ def seed_weaviate_schema() -> None:
         dict(
             name="Video",
             description="Archivos de video",
-            vectorizer_config=wc.Configure.Vectorizer.none(),
+            vectorizer_config=[
+            wc.Configure.NamedVectors.none(name="vector_video" ),
+            wc.Configure.NamedVectors.none(name="vector_audio"),
+            wc.Configure.NamedVectors.none(name="vector_text"  ),
+            ],
             properties=[
                 wc.Property(name="title", data_type=wc.DataType.TEXT),
                 wc.Property(name="doc_id", data_type=wc.DataType.TEXT),
