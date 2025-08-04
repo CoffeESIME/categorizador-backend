@@ -120,13 +120,11 @@ def process_text_embeddings(meta: Dict[str, Any]) -> List[float]:
     )
     return embedding_model.embed_documents([combined_text])[0]
 
-
 def _encode_video(video_path: str) -> List[float]:
-    try:
-        from transformers import AutoProcessor, XCLIPModel
-        import decord
-    except Exception as e:  # pragma: no cover - heavy deps may be missing
-        raise RuntimeError(f"XCLIP dependencies not available: {e}")
+    from transformers import AutoProcessor, XCLIPModel
+    import decord, torch
+
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     processor = AutoProcessor.from_pretrained("microsoft/xclip-base-patch16")
     model = (
@@ -135,15 +133,19 @@ def _encode_video(video_path: str) -> List[float]:
         .eval()
     )
 
+    # ── VideoReader SIN context manager ───────────────
     vr = decord.VideoReader(video_path, width=224, height=224)
-    idx = list(range(0, len(vr), max(1, len(vr) // 8)))[:8]
-    frames = list(vr.get_batch(idx).asnumpy().astype("uint8"))
+    try:
+        idx = list(range(0, len(vr), max(1, len(vr) // 8)))[:8]
+        frames = vr.get_batch(idx).asnumpy()          # ndarray (N, H, W, C)
+    finally:
+        del vr                                        # libera el handle nativo
 
-    inputs = processor(videos=[frames], return_tensors="pt").to(DEVICE)
+    inputs = processor(videos=list(frames), return_tensors="pt").to(DEVICE)
     with torch.no_grad():
-        out = model(**inputs)
-    vec = out.video_embeds[0]
-    vec = vec / vec.norm()
+        video_embeds = model.get_video_features(**inputs)
+        vec = video_embeds[0] / video_embeds[0].norm()
+
     return vec.cpu().numpy().tolist()
 
 
@@ -215,6 +217,7 @@ def process_video_file(
     include_audio: bool = False,
     transcribe_audio: bool = False,
 ) -> None:
+    print(">Error 1")
     vec_video = _encode_video(video_path)
     vec_audio = None
     if include_audio or transcribe_audio:
@@ -222,7 +225,7 @@ def process_video_file(
     if transcribe_audio:
         text = _transcribe_audio(video_path)
         meta["content"] = text
-
+    
     vec_text = process_text_embeddings(meta)
 
     propiedades = limpiar_meta(meta)
