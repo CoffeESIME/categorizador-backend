@@ -8,8 +8,8 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from langchain_ollama import OllamaEmbeddings
+from api.neo4j_client import driver
 
-from ..neo4j_client import driver
 from ..embeddings_to_neo import store_embedding
 class UnconnectedNodesView(APIView):
     """
@@ -20,7 +20,7 @@ class UnconnectedNodesView(APIView):
     def get(self, request, *args, **kwargs):
         query = """
         MATCH (n:UnconnectedDoc)
-        WHERE NOT (n)--()
+        WHERE NOT (n)--()s
         RETURN n.id AS id,
                n.author AS author,
                n.title AS title,
@@ -612,7 +612,6 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 import json
-from .neo4j_client import driver 
 
 def serialize_neo4j_value(value):
     """Serializa valores de Neo4j, especialmente tipos temporales."""

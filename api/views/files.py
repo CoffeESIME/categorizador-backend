@@ -128,7 +128,6 @@ class MetadataProcessingView(APIView):
                         process_ocr_with_image(file_id, meta, image_path)
 
                     elif embedding_type == "audio":
-                        print("here", )
                         audio_path = uploads_dir
                         if not audio_path or not os.path.exists(audio_path):
                             results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
@@ -157,6 +156,7 @@ class MetadataProcessingView(APIView):
                         if not video_path or not os.path.exists(video_path):
                             results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
                             continue
+                        print('now here')
                         process_video_file(file_id, meta, video_path)
                         embedding = [1]
 
@@ -166,21 +166,6 @@ class MetadataProcessingView(APIView):
                 except Exception as proc_err:
                     results.append({"id": file_id, "error": str(proc_err)})
                     continue
-
-                # elif embedding_type == "audio":
-                #     # Ejemplo: usar un modelo de audio embeddings (reemplaza por tu implementación)
-                #     from some_audio_embedding_module import AudioEmbeddings
-                #     audio_path = meta.get("file_location")
-                #     audio_model = AudioEmbeddings(model="your-audio-model")
-                #     embedding = audio_model.embed(audio_path)
-
-                # elif embedding_type == "video":
-                #     # Ejemplo: extraer y combinar embeddings de frames clave de un video
-                #     from some_video_embedding_module import VideoEmbeddings
-                #     video_path = meta.get("file_location")
-                #     video_model = VideoEmbeddings(model="your-video-model")
-                #     embedding = video_model.embed(video_path)
-
                 uploaded_file.status = "vectorized"
                 uploaded_file.save()
 
