@@ -2,14 +2,18 @@ import os
 import re
 import json
 import base64
+import copy
 from io import BytesIO
+from typing import Any, Dict
 from PIL import Image
 import pytesseract
 from moviepy.editor import VideoFileClip
+import requests
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
 from django.conf import settings
 
 # Importamos ChatOllama y HumanMessage
@@ -301,6 +305,180 @@ def build_ocr_analysis_prompt(extracted_text: str, custom_prompt: str = None):
     user_message = HumanMessage(content=full_prompt)
     messages.append(user_message)
     return messages
+
+
+def transcribe_with_speaches(
+    audio_file,
+    *,
+    base_url: str,
+    model_id: str,
+    extra_params: Dict[str, Any] | None = None,
+    api_key: str | None = None,
+    timeout: int = 300,
+) -> tuple[str, Dict[str, Any]]:
+    """Envia un archivo de audio a Speaches y devuelve la transcripcion resultante.
+    Retorna el texto transcrito y la respuesta completa del servicio.
+    """
+    if not base_url:
+        raise ValueError("No se configuro la URL base del servicio de Speaches.")
+    if not model_id:
+        raise ValueError("No se configuro el modelo de transcripcion para Speaches.")
+
+    audio_file.seek(0)
+    audio_bytes = audio_file.read()
+    if not audio_bytes:
+        raise ValueError("El archivo de audio recibido esta vacio.")
+
+    url = base_url.rstrip("/") + "/v1/audio/transcriptions"
+    files = {
+        "file": (
+            getattr(audio_file, "name", "audio.wav"),
+            audio_bytes,
+            getattr(audio_file, "content_type", None) or "audio/wav",
+        )
+    }
+    data: Dict[str, Any] = {"model": model_id}
+    if extra_params:
+        for key, val in extra_params.items():
+            if val is not None:
+                data[key] = val
+
+    headers: Dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    response = requests.post(url, files=files, data=data, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    try:
+        payload: Dict[str, Any] = response.json()
+    except ValueError as exc:  # pragma: no cover - depende del servicio externo
+        raise RuntimeError("Speaches devolvio una respuesta que no es JSON.") from exc
+
+    text = payload.get("text")
+    if not text or not isinstance(text, str):
+        raise RuntimeError("Speaches no devolvio una transcripcion valida.")
+
+    return text.strip(), payload
+
+
+def merge_metadata(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Combina dos diccionarios de metadatos preservando la informacion original
+    y agregando los nuevos valores del audio.
+    """
+    merged = copy.deepcopy(base)
+
+    for key, value in updates.items():
+        if value is None:
+            continue
+
+        if isinstance(value, str):
+            if not value.strip():
+                continue
+            merged[key] = value
+            continue
+
+        if isinstance(value, list):
+            if not value:
+                continue
+            existing = merged.get(key)
+            if isinstance(existing, list):
+                combined = existing + [item for item in value if item not in existing]
+                merged[key] = combined
+            else:
+                merged[key] = list(value)
+            continue
+
+        if isinstance(value, dict):
+            existing = merged.get(key)
+            if isinstance(existing, dict):
+                merged[key] = merge_metadata(existing, value)
+            else:
+                merged[key] = copy.deepcopy(value)
+            continue
+
+        merged[key] = value
+
+    return merged
+
+
+def build_audio_metadata_prompt(
+    transcribed_text: str,
+    existing_metadata: Dict[str, Any] | None = None,
+    custom_prompt: str | None = None,
+) -> list[HumanMessage]:
+    """
+    Construye un prompt que combina metadatos existentes con la transcripcion de audio.
+    Devuelve instrucciones para que el LLM genere un JSON estructurado coherente.
+    """
+    system_message = HumanMessage(content=build_structural_prompt("audio"))
+
+    base_instructions = [
+"Eres un asistente analítico y ESTRICTO. TU RESPUESTA DEBE SER "
+        "EXCLUSIVAMENTE UN ÚNICO OBJETO JSON VÁLIDO, sin texto adicional, "
+        "sin comas finales y sin comentarios.\n\n"
+        "Objetivo: producir un objeto que cumpla EXACTAMENTE con la interfaz "
+        "`ProcessingFileMetadata` y que fusione metadatos existentes con la transcripción de audio.\n\n"
+        "Usa SOLO estas claves y en ESTE ORDEN (omite las que no apliquen, pero respeta el orden):\n"
+        "1. embedding_type (string)\n"
+        "2. id (string)\n"
+        "3. author (string, opcional)\n"
+        "4. title (string, opcional)\n"
+        "5. content (string, opcional)\n"
+        "6. tags (array[string])\n"
+        "7. sourceType (string, opcional)\n"
+        "8. processingStatus (\"pending\"|\"processing\"|\"completed\"|\"failed\")\n"
+        "9. processingMethod (string, opcional)\n"
+        "10. llmErrorResponse (string, opcional)\n"
+        "11. work (string, opcional)\n"
+        "12. languages (array[string], opcional)\n"
+        "13. sentiment_word (string, opcional)\n"
+        "14. sentiment_value (number, opcional; -1.0..1.0)\n"
+        "15. analysis (string, opcional)\n"
+        "16. categories (array[string], opcional)\n"
+        "17. keywords (array[string], opcional)\n"
+        "18. content_type (string, opcional)\n"
+        "19. multilingual (boolean, opcional)\n"
+        "20. description (string, opcional)\n"
+        "21. topics (array[string], opcional)\n"
+        "22. style (string, opcional)\n"
+        "23. color_palette (array[string], opcional)\n"
+        "24. frame_descriptions (array[string], opcional)\n"
+        "25. composition (string, opcional)\n"
+        "26. file_type (string, opcional)\n\n"
+        "Reglas:\n"
+        "- SALIDA: un solo objeto JSON. Nada fuera del objeto.\n"
+        "- ESTRUCTURA/ORDEN: exactamente las claves listadas y en ese orden. No inventes claves nuevas.\n"
+        "- FUSIÓN: si hay metadatos iniciales, conserva lo existente cuando la transcripción no aporte cambios; "
+        "actualiza o añade detalles nuevos derivados del audio.\n"
+        "- DEDUPLICACIÓN: elimina duplicados en arrays (tags, languages, categories, keywords, topics, color_palette, frame_descriptions) "
+        "preservando el orden de primera aparición.\n"
+        "- AUDIO: coloca la transcripción íntegra en `content`; establece `content_type`=\"audio\"; si puedes, infiere `languages` y `multilingual`.\n"
+        "- RESUMEN/ANÁLISIS: `description` = resumen (1–2 frases). `analysis` = puntos clave breves.\n"
+        "- ESTADO: si hay transcripción utilizable, `processingStatus`=\"completed\"; si sigue en curso, \"processing\"; "
+        "si solo se creó la tarea, \"pending\"; ante fallo, \"failed\" y rellena `llmErrorResponse`.\n"
+        "- TIPOS: respeta los tipos. `sentiment_value` en [-1, 1].\n"
+        "- IDIOMA: responde en el idioma dominante; si es mixto, usa español.\n"
+        "- Si falta `id`, genera un placeholder estable tipo \"temp-<cadena>\".\n"
+  
+    ]
+
+    if custom_prompt:
+        base_instructions.append(f"Instrucciones adicionales del usuario: {custom_prompt}")
+
+    prompt_sections = ["\n".join(base_instructions)]
+
+    if existing_metadata:
+        metadata_str = json.dumps(existing_metadata, ensure_ascii=False, indent=2)
+        prompt_sections.append("Metadatos iniciales proporcionados por el usuario:")
+        prompt_sections.append(metadata_str)
+
+    prompt_sections.append("Transcripcion del audio (texto literal):")
+    prompt_sections.append(transcribed_text.strip())
+
+    user_message = HumanMessage(content="\n\n".join(prompt_sections))
+
+    return [system_message, user_message]
 
 def build_audio_analysis_prompt(transcribed_text: str, custom_prompt: str | None = None):
     """Construye un prompt para analizar texto transcrito de un audio."""
@@ -632,3 +810,143 @@ class LLMProcessView(APIView):
                                 status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AudioMetadataCuratorView(APIView):
+    """
+    Endpoint que recibe un archivo de audio obligatorio y un JSON opcional de metadatos.
+    Usa Speaches para transcribir el audio y un LLM para curar o complementar los metadatos.
+    """
+
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request):
+        audio_file = request.FILES.get("audio")
+        if not audio_file:
+            return Response(
+                {"error": "El campo 'audio' es obligatorio y debe enviarse como archivo."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        metadata_raw = request.data.get("metadata")
+        base_metadata: Dict[str, Any] | None = None
+        if metadata_raw:
+            if isinstance(metadata_raw, dict):
+                base_metadata = metadata_raw
+            else:
+                try:
+                    base_metadata = json.loads(metadata_raw)
+                except json.JSONDecodeError:
+                    return Response(
+                        {"error": "El campo 'metadata' debe ser un objeto JSON v��lido."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            if base_metadata is not None and not isinstance(base_metadata, dict):
+                return Response(
+                    {"error": "El campo 'metadata' debe representar un objeto JSON."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        transcription_opts_raw = request.data.get("transcription_options")
+        extra_params: Dict[str, Any] | None = None
+        if transcription_opts_raw:
+            if isinstance(transcription_opts_raw, dict):
+                extra_params = transcription_opts_raw
+            else:
+                try:
+                    extra_params = json.loads(transcription_opts_raw)
+                except json.JSONDecodeError:
+                    return Response(
+                        {"error": "El campo 'transcription_options' debe ser un objeto JSON."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            if extra_params is not None and not isinstance(extra_params, dict):
+                return Response(
+                    {"error": "El campo 'transcription_options' debe representar un objeto JSON."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        speaches_base_url = request.data.get("speaches_base_url") or getattr(
+            settings, "SPEACHES_BASE_URL", ""
+        )
+        speaches_model_id = request.data.get("speaches_model_id") or getattr(
+            settings, "SPEACHES_TRANSCRIPTION_MODEL", ""
+        )
+        speaches_api_key = request.data.get("speaches_api_key") or getattr(
+            settings, "SPEACHES_API_KEY", None
+        )
+
+        try:
+            transcription, speaches_payload = transcribe_with_speaches(
+                audio_file,
+                base_url=speaches_base_url,
+                model_id=speaches_model_id,
+                extra_params=extra_params,
+                api_key=speaches_api_key or None,
+            )
+        except Exception as exc:
+            logger.exception("Error al transcribir el audio con Speaches")
+            return Response({"error": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        try:
+            temperature = float(request.data.get("temperature", 0.5))
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "El campo 'temperature' debe ser numerico."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            max_tokens = int(request.data.get("max_tokens", 2048))
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "El campo 'max_tokens' debe ser un numero entero."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        llm_model = request.data.get("model", settings.DEFAULT_LLM_MODEL)
+        llm_base_url = request.data.get("llm_base_url", settings.LLM_BASE_URL)
+        prompt = request.data.get("prompt")
+
+        messages = build_audio_metadata_prompt(transcription, base_metadata, prompt)
+
+        try:
+            llm = ChatOllama(
+                base_url=llm_base_url,
+                model=llm_model,
+                temperature=temperature,
+                num_predict=max_tokens,
+            )
+            result = llm.invoke(messages)
+        except Exception as exc:
+            logger.exception("Error al invocar el modelo para curar metadatos de audio")
+            return Response({"error": str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        response_str = result.content if hasattr(result, "content") else result
+        parsed_result = extract_json_from_response(response_str)
+
+        if not parsed_result:
+            return Response(
+                {
+                    "error": "No se pudo interpretar la respuesta del modelo.",
+                    "raw": response_str,
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if base_metadata:
+            final_metadata = merge_metadata(base_metadata, parsed_result)
+        else:
+            final_metadata = parsed_result
+
+        include_payload = str(
+            request.data.get("include_transcription_payload", "false")
+        ).lower() in ("1", "true", "yes")
+
+        response_payload = copy.deepcopy(final_metadata)
+        response_payload["raw_transcription"] = transcription
+        response_payload["transcription_source"] = "speaches"
+        if include_payload:
+            response_payload["transcription_payload"] = speaches_payload
+
+        return Response(response_payload, status=status.HTTP_200_OK)

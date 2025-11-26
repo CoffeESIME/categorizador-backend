@@ -135,8 +135,13 @@ CSRF_TRUSTED_ORIGINS = ['http://localhost:3000']
 
 # Default models and LLM endpoints used across the project
 DEFAULT_EMBED_MODEL = os.getenv("DEFAULT_EMBED_MODEL", "granite-embedding:latest")
-DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "deepseek-r1:14b")
+DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "gpt-oss:20b")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
+SPEACHES_BASE_URL = os.getenv("SPEACHES_BASE_URL", "http://localhost:8000")
+SPEACHES_TRANSCRIPTION_MODEL = os.getenv(
+    "SPEACHES_TRANSCRIPTION_MODEL", "Systran/faster-whisper-small"
+)
+SPEACHES_API_KEY = os.getenv("SPEACHES_API_KEY", "")
 
 # Specific models for certain tasks
 IMAGE_DESCRIPTION_MODEL = os.getenv("IMAGE_DESCRIPTION_MODEL", "llava:34b")

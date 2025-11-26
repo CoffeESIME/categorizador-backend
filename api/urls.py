@@ -19,13 +19,14 @@ from .views.nodes import (
     ConnectNodesView,
     ConnectUnconnectedNodeView,
 )
-from .llm_views import LLMProcessView
+from .llm_views import LLMProcessView, AudioMetadataCuratorView
 from .rag_views import MultiModalSearchView
 
 urlpatterns = [
     path('files/upload', MultiFileUploadView.as_view(), name='file_upload'),
     path('files/', PendingFilesView.as_view(), name='pending_files'),
     path('llm/process', LLMProcessView.as_view(), name='llm_process'),
+    path('llm/audio-metadata', AudioMetadataCuratorView.as_view(), name='llm_audio_metadata'),
     path('metadata/save', MetadataProcessingView.as_view(), name='metadata_process'),
     path('metadata/unconnected-nodes', UnconnectedNodesView.as_view(), name='metadata/unconnected-nodes'),
     path('nodes/create-node', NodeCreationView.as_view(), name='node_creation'),
