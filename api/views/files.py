@@ -13,13 +13,13 @@ from ..embeddings_to_neo import store_embedding
 from ..serializers import UploadedFileSerializer
 from ..models import UploadedFile
 
-from ..services.processing import (
-    process_pdf,
-    process_image_with_description,
-    process_ocr_with_image,
-    process_text_embeddings,
-    process_audio_file,
-    process_video_file,
+from ..tasks import (
+    process_pdf_task,
+    process_image_with_description_task,
+    process_ocr_with_image_task,
+    process_text_embeddings_task,
+    process_audio_file_task,
+    process_video_file_task,
 )
 class MultiFileUploadView(APIView):
     parser_classes = (MultiPartParser, FormParser)
@@ -110,29 +110,31 @@ class MetadataProcessingView(APIView):
                 uploads_dir = os.path.join('uploads', meta.get("file_location"))
                 print("data", meta, embedding_type)
                 try:
+                task_result = None
+                try:
                     if embedding_type == "pdf":
-                        process_pdf(file_id, meta)
+                        task_result = process_pdf_task.delay(file_id, meta)
 
                     elif embedding_type == "image_w_des":
                         image_path = uploads_dir
                         if not image_path or not os.path.exists(image_path):
                             results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
                             continue
-                        process_image_with_description(file_id, meta, image_path)
+                        task_result = process_image_with_description_task.delay(file_id, meta, image_path)
 
                     elif embedding_type == "ocr_w_img":
                         image_path = uploads_dir
                         if not image_path or not os.path.exists(image_path):
                             results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
                             continue
-                        process_ocr_with_image(file_id, meta, image_path)
+                        task_result = process_ocr_with_image_task.delay(file_id, meta, image_path)
 
                     elif embedding_type == "audio":
                         audio_path = uploads_dir
                         if not audio_path or not os.path.exists(audio_path):
                             results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
                             continue
-                        process_audio_file(file_id, meta, audio_path)
+                        task_result = process_audio_file_task.delay(file_id, meta, audio_path)
                         embedding = [1]
 
                     elif embedding_type in ["audio_text", "audio+text"]:
@@ -140,7 +142,7 @@ class MetadataProcessingView(APIView):
                         if not audio_path or not os.path.exists(audio_path):
                             results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
                             continue
-                        process_audio_file(file_id, meta, audio_path, transcribe=True)
+                        task_result = process_audio_file_task.delay(file_id, meta, audio_path, transcribe=True)
                         embedding = [1]
 
                     elif embedding_type in ["video_audio", "video+audio"]:
@@ -148,7 +150,7 @@ class MetadataProcessingView(APIView):
                         if not video_path or not os.path.exists(video_path):
                             results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
                             continue
-                        process_video_file(file_id, meta, video_path, include_audio=True)
+                        task_result = process_video_file_task.delay(file_id, meta, video_path, include_audio=True)
                         embedding = [1]
 
                     elif embedding_type == "video":
@@ -157,16 +159,19 @@ class MetadataProcessingView(APIView):
                             results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
                             continue
                         print('now here')
-                        process_video_file(file_id, meta, video_path)
+                        task_result = process_video_file_task.delay(file_id, meta, video_path)
                         embedding = [1]
 
                     else:
-                        embedding = process_text_embeddings(meta)
+                        task_result = process_text_embeddings_task.delay(meta)
+                        embedding = [1] # Placeholder, result will be async
 
                 except Exception as proc_err:
                     results.append({"id": file_id, "error": str(proc_err)})
                     continue
-                uploaded_file.status = "vectorized"
+                
+                # We update status to 'processing' instead of 'vectorized' immediately
+                uploaded_file.status = "processing"
                 uploaded_file.save()
 
                 # Guardar metadatos en un archivo JSON (opcional)
@@ -189,7 +194,8 @@ class MetadataProcessingView(APIView):
                     "file_location": uploaded_file.file_location,
                     "status": uploaded_file.status,
                     "embedding_type": embedding_type,
-                    "embeddings_created": 1 if embedding else 0
+                    "embeddings_created": 1 if embedding else 0,
+                    "task_id": task_result.id if task_result else None
                 }
                 results.append(result_item)
 

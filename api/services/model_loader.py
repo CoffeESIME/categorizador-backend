@@ -1,12 +1,17 @@
 import torch
 from transformers import AutoProcessor, XCLIPModel
 from faster_whisper import WhisperModel
+import clip
+
 
 class ModelSingleton:
     _instance = None
     _xclip_model = None
     _xclip_processor = None
     _whisper_model = None
+    _clip_model = None
+    _clip_preprocess = None
+
 
     def __new__(cls):
         if cls._instance is None:
@@ -39,6 +44,13 @@ class ModelSingleton:
                 compute_type=compute_type
             )
         return self._whisper_model
+
+    def get_clip_model(self):
+        if self._clip_model is None:
+            print(f"Loading CLIP model on {self.device}...")
+            self._clip_model, self._clip_preprocess = clip.load("ViT-B/32", device=self.device)
+        return self._clip_model, self._clip_preprocess
+
 
 # Global instance
 model_loader = ModelSingleton()

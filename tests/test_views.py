@@ -16,8 +16,8 @@ def test_metadata_processing_view_delegates(db):
 
     data = [{"original_name": "sample.txt", "embedding_type": "pdf", "file_location": "texts/sample.txt"}]
     client = Client()
-    with mock.patch("api.services.processing.process_pdf") as m_pdf:
-        m_pdf.return_value = None
+    with mock.patch("api.tasks.process_pdf_task.delay") as m_delay:
+        m_delay.return_value = mock.Mock(id="123")
         response = client.post(reverse("metadata_process"), data, content_type="application/json")
         assert response.status_code == 200
-        m_pdf.assert_called_once()
+        m_delay.assert_called_once()

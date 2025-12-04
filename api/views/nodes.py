@@ -19,7 +19,7 @@ class UnconnectedNodesView(APIView):
     """
     def get(self, request, *args, **kwargs):
         query = """
-        MATCH (n:UnconnectedDoc)
+        MATCH (n:Inbox)
         WHERE NOT (n)--()s
         RETURN n.id AS id,
                n.author AS author,
@@ -482,7 +482,7 @@ class ConnectNodesView(APIView):
 
 class ConnectUnconnectedNodeView(APIView):
     """
-    Endpoint para conectar automáticamente un nodo de tipo "UnconnectedDoc" 
+    Endpoint para conectar automáticamente un nodo de tipo "Inbox" 
     utilizando LLM local para generar las conexiones adecuadas.
     
     POST: Recibe una petición con:
@@ -506,9 +506,9 @@ class ConnectUnconnectedNodeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Verificar que el nodo existe y es de tipo UnconnectedDoc
+        # Verificar que el nodo existe y es de tipo Inbox
         query_validate = """
-        MATCH (n:UnconnectedDoc) 
+        MATCH (n:Inbox) 
         WHERE n.id = $nodeId
         RETURN n
         """
@@ -528,7 +528,7 @@ class ConnectUnconnectedNodeView(APIView):
                 
                 if not record:
                     return Response(
-                        {"error": "El nodo no existe o no es de tipo UnconnectedDoc."},
+                        {"error": "El nodo no existe o no es de tipo Inbox."},
                         status=status.HTTP_404_NOT_FOUND
                     )
                 
@@ -557,7 +557,7 @@ class ConnectUnconnectedNodeView(APIView):
                 Los tipos de nodos permitidos en el sistema son: {json.dumps(allowed_types, indent=2)}
                 
                 Genera una consulta Cypher para Neo4j que:
-                1. Identifique nodos existentes para conectar con este UnconnectedDoc
+                1. Identifique nodos existentes para conectar con este nodo (Inbox)
                 2. Cree las relaciones apropiadas basadas en las propiedades
                 3. Si es posible transferir todas las propiedades relevantes, elimine el nodo original
                 
@@ -575,7 +575,7 @@ class ConnectUnconnectedNodeView(APIView):
                     
                     # Verificar si el nodo aún existe (no fue eliminado por la consulta)
                     check_query = """
-                    MATCH (n:UnconnectedDoc) 
+                    MATCH (n:Inbox) 
                     WHERE n.id = $nodeId
                     RETURN n
                     """

@@ -32,7 +32,7 @@ def flatten_list_recursive(lst):
             flat.append(item)
     return flat
 
-def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str = "UnconnectedDoc"):
+def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str = "DigitalAsset"):
     """
     Almacena un nodo en Neo4j sin el embedding (solo los metadatos).
     El embedding se guardará en Weaviate por separado.
@@ -93,9 +93,21 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
     
     set_properties_cypher = ", ".join(set_clauses)
     
+    # Construir etiquetas dinámicas
+    labels = [label, "Inbox"]
+    
+    # Añadir etiqueta de content_type si existe
+    if "content_type" in meta and meta["content_type"]:
+        ct = meta["content_type"]
+        # Simple sanitización para asegurar que sea un string válido para etiqueta
+        if isinstance(ct, str) and ct.isalnum():
+            labels.append(ct.capitalize())
+            
+    labels_str = ":".join(labels)
+    
     # Ejecutar un comando UNWIND para los casos más complejos
     cypher = f"""
-    CREATE (n:{label})
+    CREATE (n:{labels_str})
     SET {set_properties_cypher}
     RETURN n
     """
