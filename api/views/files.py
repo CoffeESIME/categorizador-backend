@@ -24,6 +24,8 @@ from ..tasks import (
     process_audio_file_task,
     process_video_file_task,
 )
+from ..utils import upload_file_to_minio
+
 class MultiFileUploadView(APIView):
     parser_classes = (MultiPartParser, FormParser)
     def post(self, request, *args, **kwargs):
@@ -37,23 +39,51 @@ class MultiFileUploadView(APIView):
         for file in files:
             original_name = file.name
             sanitized_name = original_name.replace(" ", "_")
-            file.name = sanitized_name
             
-            instance = UploadedFile.objects.create(
-                file=file,
-                file_type=file.content_type,
-                size=file.size,
-                status='pending',
-                original_name=sanitized_name  
-            )
-            logger.info(f"MultiFileUploadView: File '{sanitized_name}' uploaded successfully. ID: {instance.id}")
-            uploaded_files.append({
-                "id": instance.id,
-                "original_name": sanitized_name,  
-                "location": instance.file.url,
-                "status": 'uploaded',
-                "file_type": file.content_type
-            })
+            # Determine path based on api/models.py custom_upload_path logic (or simplified)
+            # Replicating basic logic here or we can call the function if imported.
+            # Let's keep it simple and consistent with seeds/models folders.
+            file_type = file.content_type
+            folder = 'others'
+            if file_type.startswith('image/'):
+                folder = 'images'
+            elif file_type.startswith('video/'):
+                folder = 'videos'
+            elif file_type.startswith('audio/'):
+                folder = 'audio'
+            elif file_type.startswith('text/'):
+                folder = 'texts'
+            elif file_type in ['application/pdf', 'application/msword']:
+                folder = 'documents'
+            
+            unique_name = f"{uuid.uuid4()}_{sanitized_name}"
+            object_name = f"{folder}/{unique_name}"
+            
+            try:
+                # Upload to MinIO
+                upload_file_to_minio(file, settings.AWS_STORAGE_BUCKET_NAME, object_name)
+                
+                # Create DB record
+                instance = UploadedFile.objects.create(
+                    file=None, # File is in MinIO
+                    file_type=file_type,
+                    size=file.size,
+                    status='pending',
+                    original_name=sanitized_name,
+                    file_location=object_name # Save MinIO Key
+                )
+                logger.info(f"MultiFileUploadView: File '{sanitized_name}' uploaded to MinIO: {object_name}. ID: {instance.id}")
+                uploaded_files.append({
+                    "id": instance.id,
+                    "original_name": sanitized_name,  
+                    "location": instance.file_location,
+                    "status": 'uploaded',
+                    "file_type": file_type
+                })
+            except Exception as e:
+                logger.error(f"Error uploading file {sanitized_name} to MinIO: {e}")
+                return Response({"error": f"Error saving file {sanitized_name}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         return Response({
             "status": "Archivos subidos correctamente",
             "files": uploaded_files
@@ -116,7 +146,8 @@ class MetadataProcessingView(APIView):
                 meta.setdefault("content_type", embedding_type)
 
                 embedding = []
-                uploads_dir = os.path.join('uploads', meta.get("file_location"))
+                file_key = meta.get("file_location") # MinIO Object Key
+                
                 print("data", meta, embedding_type)
                 task_result = None
                 try:
@@ -125,62 +156,55 @@ class MetadataProcessingView(APIView):
                         task_result = process_pdf_task.delay(file_id, meta)
 
                     elif embedding_type == "image_w_des":
-                        image_path = uploads_dir
-                        if not image_path or not os.path.exists(image_path):
-                            logger.error(f"MetadataProcessingView: Image not found at '{image_path}' for file '{file_id}'.")
-                            results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
+                        if not file_key:
+                            logger.error(f"MetadataProcessingView: No file_location for '{file_id}'.")
+                            results.append({"id": file_id, "error": "No hay file_location"})
                             continue
                         logger.info(f"MetadataProcessingView: Triggering Image Description task for file '{file_id}'.")
-                        task_result = process_image_with_description_task.delay(file_id, meta, image_path)
+                        task_result = process_image_with_description_task.delay(file_id, meta, file_key)
 
                     elif embedding_type == "ocr_w_img":
-                        image_path = uploads_dir
-                        if not image_path or not os.path.exists(image_path):
-                            logger.error(f"MetadataProcessingView: Image not found at '{image_path}' for file '{file_id}'.")
-                            results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
+                         if not file_key:
+                            logger.error(f"MetadataProcessingView: No file_location for '{file_id}'.")
+                            results.append({"id": file_id, "error": "No hay file_location"})
                             continue
-                        logger.info(f"MetadataProcessingView: Triggering OCR task for file '{file_id}'.")
-                        task_result = process_ocr_with_image_task.delay(file_id, meta, image_path)
+                         logger.info(f"MetadataProcessingView: Triggering OCR task for file '{file_id}'.")
+                         task_result = process_ocr_with_image_task.delay(file_id, meta, file_key)
 
                     elif embedding_type == "audio":
-                        audio_path = uploads_dir
-                        if not audio_path or not os.path.exists(audio_path):
-                            logger.error(f"MetadataProcessingView: Audio not found at '{audio_path}' for file '{file_id}'.")
-                            results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
-                            continue
+                        if not file_key:
+                             logger.error(f"MetadataProcessingView: No file_location for '{file_id}'.")
+                             results.append({"id": file_id, "error": "No hay file_location"})
+                             continue
                         logger.info(f"MetadataProcessingView: Triggering Audio task for file '{file_id}'.")
-                        task_result = process_audio_file_task.delay(file_id, meta, audio_path)
+                        task_result = process_audio_file_task.delay(file_id, meta, file_key)
                         embedding = [1]
 
                     elif embedding_type in ["audio_text", "audio+text"]:
-                        audio_path = uploads_dir
-                        if not audio_path or not os.path.exists(audio_path):
-                            logger.error(f"MetadataProcessingView: Audio not found at '{audio_path}' for file '{file_id}'.")
-                            results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
-                            continue
+                        if not file_key:
+                             logger.error(f"MetadataProcessingView: No file_location for '{file_id}'.")
+                             results.append({"id": file_id, "error": "No hay file_location"})
+                             continue
                         logger.info(f"MetadataProcessingView: Triggering Audio+Text task for file '{file_id}'.")
-                        task_result = process_audio_file_task.delay(file_id, meta, audio_path, transcribe=True)
+                        task_result = process_audio_file_task.delay(file_id, meta, file_key, transcribe=True)
                         embedding = [1]
 
                     elif embedding_type in ["video_audio", "video+audio"]:
-                        video_path = uploads_dir
-                        if not video_path or not os.path.exists(video_path):
-                            logger.error(f"MetadataProcessingView: Video not found at '{video_path}' for file '{file_id}'.")
-                            results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
-                            continue
+                        if not file_key:
+                             logger.error(f"MetadataProcessingView: No file_location for '{file_id}'.")
+                             results.append({"id": file_id, "error": "No hay file_location"})
+                             continue
                         logger.info(f"MetadataProcessingView: Triggering Video+Audio task for file '{file_id}'.")
-                        task_result = process_video_file_task.delay(file_id, meta, video_path, include_audio=True)
+                        task_result = process_video_file_task.delay(file_id, meta, file_key, include_audio=True)
                         embedding = [1]
 
                     elif embedding_type == "video":
-                        video_path = uploads_dir
-                        if not video_path or not os.path.exists(video_path):
-                            logger.error(f"MetadataProcessingView: Video not found at '{video_path}' for file '{file_id}'.")
-                            results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
-                            continue
-                        print('now here')
+                        if not file_key:
+                             logger.error(f"MetadataProcessingView: No file_location for '{file_id}'.")
+                             results.append({"id": file_id, "error": "No hay file_location"})
+                             continue
                         logger.info(f"MetadataProcessingView: Triggering Video task for file '{file_id}'.")
-                        task_result = process_video_file_task.delay(file_id, meta, video_path)
+                        task_result = process_video_file_task.delay(file_id, meta, file_key)
                         embedding = [1]
 
                     else:
@@ -197,23 +221,9 @@ class MetadataProcessingView(APIView):
                 uploaded_file.status = "processing"
                 uploaded_file.save()
 
-                # Guardar metadatos en un archivo JSON (opcional)
-                json_filename = f"metadata_{uploaded_file.original_name}.json"
-                json_path = os.path.join(settings.MEDIA_ROOT, json_filename)
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(meta, f, ensure_ascii=False, indent=2)
-
-                # Eliminar el archivo si se indica
-                if meta.get("deletedFile") is True:
-                    file_path = uploaded_file.file.path
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                    uploaded_file.status = "deleted"
-                    uploaded_file.save()
-
                 result_item = {
                     "id": file_id,
-                    "filename": uploaded_file.file.name,
+                    "filename": uploaded_file.original_name,
                     "file_location": uploaded_file.file_location,
                     "status": uploaded_file.status,
                     "embedding_type": embedding_type,
@@ -501,8 +511,28 @@ class TextMetadataProcessingView(APIView):
                 {"error": str(e)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-            
-            
-            
-            
-            
+
+
+class FileProxyView(APIView):
+    """
+    Proxy endpoint to serve files from MinIO.
+    GET /api/files/proxy/<path:object_key>
+    """
+    def get(self, request, object_key, *args, **kwargs):
+        from django.http import HttpResponse, Http404
+        from ..utils import download_file_from_minio
+        import mimetypes
+        
+        try:
+            with download_file_from_minio(settings.AWS_STORAGE_BUCKET_NAME, object_key) as temp_path:
+                mime_type, _ = mimetypes.guess_type(object_key)
+                if not mime_type:
+                    mime_type = 'application/octet-stream'
+                
+                with open(temp_path, 'rb') as f:
+                    response = HttpResponse(f.read(), content_type=mime_type)
+                    response['Content-Disposition'] = f'inline; filename="{object_key.split("/")[-1]}"'
+                    return response
+        except Exception as e:
+            logger.error(f"FileProxyView: Error serving file {object_key}: {e}")
+            raise Http404(f"File not found: {object_key}")

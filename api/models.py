@@ -42,7 +42,7 @@ class UploadedFile(models.Model):
         ('deleted', 'Eliminado'),
     ]
     
-    file = models.FileField(upload_to=custom_upload_path)
+    file = models.FileField(upload_to=custom_upload_path, null=True, blank=True)
     original_name = models.CharField(max_length=255, blank=True)
     file_type = models.CharField(max_length=50)
     size = models.PositiveIntegerField()
@@ -51,8 +51,9 @@ class UploadedFile(models.Model):
     file_location = models.CharField(max_length=255, blank=True)
     
     def save(self, *args, **kwargs):
-        if not self.pk:
+        if not self.pk and not self.original_name and self.file:
             self.original_name = self.file.name
+        if not self.pk:
             self._file_location = ''
         
         super().save(*args, **kwargs)

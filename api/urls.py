@@ -6,6 +6,7 @@ from .views.files import (
     MetadataProcessingView,
     TextProcessView,
     TextMetadataProcessingView,
+    FileProxyView,
 )
 from .views.graph import GraphView, AdvancedGraphSearchView
 from .views.nodes import (
@@ -25,6 +26,7 @@ from .views.tasks import TaskStatusView
 
 urlpatterns = [
     path('files/upload', MultiFileUploadView.as_view(), name='file_upload'),
+    path('files/proxy/<path:object_key>', FileProxyView.as_view(), name='file_proxy'),
     path('files/', PendingFilesView.as_view(), name='pending_files'),
     path('llm/process', LLMProcessView.as_view(), name='llm_process'),
     path('llm/audio-metadata', AudioMetadataCuratorView.as_view(), name='llm_audio_metadata'),
