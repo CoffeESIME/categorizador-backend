@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand
 
 from api.seeds import (
     seed_node_types,
-    ensure_upload_directories,
+    ensure_minio_structure,
     seed_weaviate_schema,
 )
 
@@ -14,7 +14,7 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **options):
-        ensure_upload_directories()
+        ensure_minio_structure()
         seed_node_types()
         seed_weaviate_schema()
         self.stdout.write(self.style.SUCCESS("Datos iniciales cargados."))

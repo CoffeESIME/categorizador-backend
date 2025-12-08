@@ -149,6 +149,7 @@ OCR_MODEL = os.getenv("OCR_MODEL", "llava:34b")
 OCR_ANALYSIS_MODEL = os.getenv("OCR_ANALYSIS_MODEL", "deepseek-r1:14b")
 TESSERACT_ANALYSIS_MODEL = os.getenv("TESSERACT_ANALYSIS_MODEL", "deepseek-r1:14b")
 
+
 # Weaviate configuration
 WEAVIATE_HTTP_HOST = os.getenv("WEAVIATE_HTTP_HOST", "localhost")
 WEAVIATE_HTTP_PORT = int(os.getenv("WEAVIATE_HTTP_PORT", 8080))
@@ -156,6 +157,12 @@ WEAVIATE_HTTP_SECURE = os.getenv("WEAVIATE_HTTP_SECURE", "false").lower() == "tr
 WEAVIATE_GRPC_HOST = os.getenv("WEAVIATE_GRPC_HOST", "localhost")
 WEAVIATE_GRPC_PORT = int(os.getenv("WEAVIATE_GRPC_PORT", 50051))
 WEAVIATE_GRPC_SECURE = os.getenv("WEAVIATE_GRPC_SECURE", "false").lower() == "true"
+
+# MinIO / S3 Configuration
+AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL", "http://localhost:9005")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "categorizer-media")
 
 
 # settings.py

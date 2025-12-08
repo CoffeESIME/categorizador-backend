@@ -2,8 +2,11 @@
 from .neo4j_client import driver
 import uuid
 import os
+import logging
 import weaviate
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 # Conexión personalizada a Weaviate
 client = weaviate.connect_to_custom(
@@ -53,16 +56,16 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
     ]
     
     # Primero, hagamos un debug para ver qué estructura tienen los datos
-    print("DEBUG - Meta data structure:")
+    logger.debug("DEBUG - Meta data structure:")
     for key in meta:
         if key in allowed_keys:
-            print(f"{key}: {type(meta[key])}")
+            logger.debug(f"{key}: {type(meta[key])}")
             # Si es lista, verificar su contenido
             if isinstance(meta[key], list) and meta[key]:
-                print(f"  First element type: {type(meta[key][0])}")
+                logger.debug(f"  First element type: {type(meta[key][0])}")
                 # Si hay al menos un elemento que sea lista o diccionario
                 if any(isinstance(elem, (list, dict)) for elem in meta[key]):
-                    print(f"  WARNING: {key} contains nested collections!")
+                    logger.warning(f"  WARNING: {key} contains nested collections!")
     
     # Preparar las propiedades validando cada una
     params = {"doc_id": doc_id, "id": str(uuid.uuid4())}
@@ -75,13 +78,13 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
             # Convertir valores no compatibles a cadenas
             if isinstance(value, list):
                 if any(isinstance(elem, (list, dict)) for elem in value):
-                    print(f"Converting nested collection in {key} to string")
+                    logger.debug(f"Converting nested collection in {key} to string")
                     params[key] = str(value)  # Convertir a string
                 else:
                     # Solo usar la lista si todos los elementos son primitivos
                     params[key] = value
             elif isinstance(value, dict):
-                print(f"Converting dict in {key} to string")
+                logger.debug(f"Converting dict in {key} to string")
                 params[key] = str(value)
             else:
                 params[key] = value
@@ -121,18 +124,18 @@ def store_embedding(doc_id: str, embedding: list[float], meta: dict, label: str 
                 store_embedding_weaviate(doc_id, embedding, meta)
             return record["n"] if record else None
     except Exception as e:
-        print(f"ERROR with Neo4j: {str(e)}")
-        print(f"Parameters causing issues: {params}")
+        logger.error(f"ERROR with Neo4j: {str(e)}", exc_info=True)
+        logger.error(f"Parameters causing issues: {params}")
         # Intentar identificar cuál parámetro está causando el problema
         for key, value in params.items():
-            print(f"Testing {key}...")
+            logger.debug(f"Testing {key}...")
             test_params = {"test_value": value}
             try:
                 with driver.session() as session:
                     session.run("RETURN $test_value", test_params)
-                print(f"  {key} is OK")
+                logger.debug(f"  {key} is OK")
             except Exception as param_error:
-                print(f"  ERROR with {key}: {str(param_error)}")
+                logger.error(f"  ERROR with {key}: {str(param_error)}")
         raise  # Re-lanzar la excepción original
       
     
@@ -173,7 +176,7 @@ def store_embedding_weaviate(doc_id: str, embedding: list[float], meta: dict):
     try:
         collection = client.collections.get(collection_name)
     except Exception:
-        print(f"La colección {collection_name} no existe, verificando esquema")
+        logger.warning(f"La colección {collection_name} no existe, verificando esquema")
         return None
     
     try:
@@ -182,10 +185,10 @@ def store_embedding_weaviate(doc_id: str, embedding: list[float], meta: dict):
             properties=data_object,
             vector=embedding
         )
-        print(f"Objeto guardado en colección {collection_name} con ID: {result}")
+        logger.info(f"Objeto guardado en colección {collection_name} con ID: {result}")
         return result
     except Exception as e:
-        print(f"Error al guardar embedding en Weaviate: {str(e)}")
+        logger.error(f"Error al guardar embedding en Weaviate: {str(e)}", exc_info=True)
         raise
 
 def store_chunk_in_weaviate(client, chunk_text: str, embedding: list[float], original_doc_id: str, chunk_metadata: dict):
@@ -208,10 +211,10 @@ def store_chunk_in_weaviate(client, chunk_text: str, embedding: list[float], ori
             properties=data_object,
             vector=embedding
         )
-        print(f"Chunk de {original_doc_id} guardado en Weaviate ({collection_name}) con UUID: {uuid}")
+        logger.info(f"Chunk de {original_doc_id} guardado en Weaviate ({collection_name}) con UUID: {uuid}")
         return uuid
     except Exception as e:
-        print(f"Error guardando chunk en Weaviate para {original_doc_id}: {e}")
+        logger.error(f"Error guardando chunk en Weaviate para {original_doc_id}: {e}", exc_info=True)
         return None
 def guardar_imagen_en_weaviate(
     client, 
@@ -227,7 +230,7 @@ def guardar_imagen_en_weaviate(
     if "doc_id" in propiedades_for_weaviate:
         propiedades_for_weaviate["doc_id"] = str(propiedades_for_weaviate["doc_id"])
     else:
-        print(f"ADVERTENCIA: 'doc_id' no encontrado en meta para guardar_imagen_en_weaviate. Meta: {meta}")
+        logger.warning(f"ADVERTENCIA: 'doc_id' no encontrado en meta para guardar_imagen_en_weaviate. Meta: {meta}")
 
     vectores = {}
     if vec_clip is not None:
@@ -240,7 +243,7 @@ def guardar_imagen_en_weaviate(
     try:
         imagenes_collection = client.collections.get("Imagenes")
         
-        print(f"DEBUG: Enviando a Weaviate (Imagenes) propiedades: {propiedades_for_weaviate}")
+        logger.debug(f"DEBUG: Enviando a Weaviate (Imagenes) propiedades: {propiedades_for_weaviate}")
 
         if not vectores:
             insert_result_uuid = imagenes_collection.data.insert(properties=propiedades_for_weaviate)
@@ -251,12 +254,12 @@ def guardar_imagen_en_weaviate(
         # insert_result_uuid ya es el objeto uuid.UUID directamente.
         # No necesitas acceder a .uuid en él.
         
-        print(f"[OK] Objeto guardado en Imagenes {propiedades_for_weaviate.get('doc_id')} · UUID: {insert_result_uuid}")
+        logger.info(f"[OK] Objeto guardado en Imagenes {propiedades_for_weaviate.get('doc_id')} · UUID: {insert_result_uuid}")
         return str(insert_result_uuid) # Convertir el objeto uuid.UUID a string para el retorno
         
     except Exception as e:
-        print(f"Error al guardar en Weaviate (Imagenes) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}")
-        print(f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}")
+        logger.error(f"Error al guardar en Weaviate (Imagenes) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}", exc_info=True)
+        logger.debug(f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}")
         raise
 
 def guardar_video_en_weaviate(
@@ -273,7 +276,7 @@ def guardar_video_en_weaviate(
     if "doc_id" in propiedades_for_weaviate:
         propiedades_for_weaviate["doc_id"] = str(propiedades_for_weaviate["doc_id"])
     else:
-        print(
+        logger.warning(
             f"ADVERTENCIA: 'doc_id' no encontrado en meta para guardar_video_en_weaviate. Meta: {meta}"
         )
 
@@ -288,7 +291,7 @@ def guardar_video_en_weaviate(
     try:
         videos_collection = client.collections.get("Video")
 
-        print(
+        logger.debug(
             f"DEBUG: Enviando a Weaviate (Video) propiedades: {propiedades_for_weaviate}"
         )
 
@@ -299,16 +302,16 @@ def guardar_video_en_weaviate(
                 properties=propiedades_for_weaviate, vector=vectores
             )
 
-        print(
+        logger.info(
             f"[OK] Objeto guardado en Video {propiedades_for_weaviate.get('doc_id')} · UUID: {insert_result_uuid}"
         )
         return str(insert_result_uuid)
 
     except Exception as e:
-        print(
-            f"Error al guardar en Weaviate (Video) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}"
+        logger.error(
+            f"Error al guardar en Weaviate (Video) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}", exc_info=True
         )
-        print(
+        logger.debug(
             f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}"
         )
         raise
@@ -328,7 +331,7 @@ def guardar_audio_en_weaviate(
     if "doc_id" in propiedades_for_weaviate:
         propiedades_for_weaviate["doc_id"] = str(propiedades_for_weaviate["doc_id"])
     else:
-        print(
+        logger.warning(
             f"ADVERTENCIA: 'doc_id' no encontrado en meta para guardar_audio_en_weaviate. Meta: {meta}"
         )
 
@@ -341,7 +344,7 @@ def guardar_audio_en_weaviate(
     try:
         audio_collection = client.collections.get("Audio")
 
-        print(
+        logger.debug(
             f"DEBUG: Enviando a Weaviate (Audio) propiedades: {propiedades_for_weaviate}"
         )
 
@@ -352,16 +355,16 @@ def guardar_audio_en_weaviate(
                 properties=propiedades_for_weaviate, vector=vectores
             )
 
-        print(
+        logger.info(
             f"[OK] Objeto guardado en Audio {propiedades_for_weaviate.get('doc_id')} · UUID: {insert_result_uuid}"
         )
         return str(insert_result_uuid)
 
     except Exception as e:
-        print(
-            f"Error al guardar en Weaviate (Audio) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}"
+        logger.error(
+            f"Error al guardar en Weaviate (Audio) para doc_id {propiedades_for_weaviate.get('doc_id')}: {e}", exc_info=True
         )
-        print(
+        logger.debug(
             f"DEBUG: Propiedades que causaron error en Weaviate: {propiedades_for_weaviate}"
         )
         raise

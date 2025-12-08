@@ -1,5 +1,7 @@
 import os
 import json
+import boto3
+from botocore.exceptions import ClientError
 
 from api.neo4j_client import driver
 import weaviate
@@ -8,181 +10,229 @@ from django.conf import settings
 
 
 def seed_node_types():
-    """Crea o actualiza nodos base en Neo4j para la aplicación."""
+    """
+    Define el esquema de metadatos (Ontología) en Neo4j.
+    Estrategia Híbrida: Estructura Core + Flexibilidad Reactiva.
+    """
     node_types = [
+        # ---------------------------------------------------------
+        # NIVEL 1: SOPORTE DE ARCHIVOS (Datos Técnicos + Flexibilidad)
+        # ---------------------------------------------------------
         {
-            "id": "author",
-            "name": "Author",
+            "id": "digital_asset",
+            "name": "Digital Asset (Archivo Base)",
+            "description": "Datos técnicos inmutables y contexto personal flexible.",
             "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre del autor", "required": True},
-                {"fieldName": "birthdate", "placeholder": "Fecha de nacimiento (YYYY-MM-DD)", "required": False},
-                {"fieldName": "bio", "placeholder": "Breve biografía", "required": False},
+                # --- Core Técnico ---
+                {"fieldName": "doc_id", "placeholder": "UUID del sistema", "required": True, "readonly": True},
+                {"fieldName": "file_hash", "placeholder": "SHA256 Hash (Deduplicación)", "required": True, "readonly": True},
+                {"fieldName": "file_path", "placeholder": "Ruta relativa", "required": True, "readonly": True},
+                {"fieldName": "mime_type", "placeholder": "MIME Type", "required": True, "readonly": True},
+                {"fieldName": "size_bytes", "placeholder": "Tamaño (bytes)", "required": True, "readonly": True},
+                {"fieldName": "original_name", "placeholder": "Nombre original", "required": True},
+                {"fieldName": "creation_date", "placeholder": "Fecha de creación", "required": False},
+
+                # --- FLEXIBILIDAD TOTAL (Catch-All) ---
+                # Aquí guardas anécdotas: "Me la recomendó Juan en la fiesta"
+                {"fieldName": "user_memories", "placeholder": "Memorias / Contexto personal", "required": False, "widget": "textarea"},
+                # Aquí guardas datos técnicos raros: {"bpm": 120, "iso": 400}
+                {"fieldName": "dynamic_metadata", "placeholder": "Metadatos extra (JSON)", "required": False, "widget": "json_editor"},
+            ])
+        },
+        
+        # ---------------------------------------------------------
+        # NIVEL 2: INBOX / STAGING (Sugerencias de IA para Curaduría)
+        # Estos campos son temporales. El usuario los edita y al guardar se convierten en relaciones.
+        # ---------------------------------------------------------
+        {
+            "id": "inbox_item",
+            "name": "Inbox / Metadatos Sugeridos",
+            "description": "Espacio de trabajo para revisión humana antes de la conexión.",
+            "fields": json.dumps([
+                # --- Estado del Proceso ---
+                {"fieldName": "processing_status", "placeholder": "pending/done/error", "required": True},
+                {"fieldName": "error_log", "placeholder": "Log de errores", "readonly": True, "widget": "textarea"},
+                
+                # --- Análisis Semántico General ---
+                {"fieldName": "ai_summary", "placeholder": "Resumen IA", "readonly": True, "widget": "textarea"},
+                {"fieldName": "ai_insights", "placeholder": "Insights extra detectados", "readonly": True, "widget": "textarea"},
+                {"fieldName": "detected_language", "placeholder": "Idioma detectado (es, en)", "required": False},
+                
+                # --- Input del Usuario al Vuelo ---
+                {"fieldName": "user_notes_input", "placeholder": "Nota rápida al subir", "required": False, "widget": "textarea"},
+
+                # --- Dimensiones Artísticas y Estructurales (Sugeridas) ---
+                {"fieldName": "suggested_title", "placeholder": "Título sugerido", "required": False},
+                {"fieldName": "suggested_style", "placeholder": "Estilo (Barroco, Cyberpunk)", "required": False},
+                {"fieldName": "suggested_technique", "placeholder": "Técnica/Forma (Óleo, Haiku)", "required": False},
+                {"fieldName": "suggested_mood", "placeholder": "Atmósfera/Mood", "required": False},
+
+                # --- Relaciones Sugeridas (Texto plano -> Futura Conexión) ---
+                {"fieldName": "suggested_author", "placeholder": "Autor/Creador detectado", "required": False},
+                {"fieldName": "suggested_tags", "placeholder": "Tags (lista)", "required": False},
+                {"fieldName": "suggested_topics", "placeholder": "Temas (Conceptos)", "required": False},
+                {"fieldName": "suggested_location", "placeholder": "Lugar/País mencionado", "required": False},
+                {"fieldName": "related_work", "placeholder": "Obra/Proyecto relacionado", "required": False},
+                
+                # --- Sentimiento ---
+                {"fieldName": "sentiment_label", "placeholder": "Sentimiento (Texto)", "required": False},
+                {"fieldName": "sentiment_score", "placeholder": "Sentimiento (Numérico -1 a 1)", "required": False, "type": "number"},
+                
+                # --- Análisis Profundo ---
+                {"fieldName": "analysis", "placeholder": "Análisis detallado", "required": False, "widget": "textarea"},
+            ])
+        },
+
+        # ---------------------------------------------------------
+        # NIVEL 3: TIPOS DE CONTENIDO (Propiedades Específicas)
+        # ---------------------------------------------------------
+        {
+            "id": "audio",
+            "name": "Audio / Música",
+            "fields": json.dumps([
+                {"fieldName": "title", "placeholder": "Título", "required": True},
+                {"fieldName": "artist", "placeholder": "Artista", "required": False},
+                {"fieldName": "album", "placeholder": "Álbum", "required": False},
+                {"fieldName": "release_year", "placeholder": "Año", "required": False},
+                {"fieldName": "genre", "placeholder": "Género", "required": False},
+                {"fieldName": "lyrics", "placeholder": "Letra / Transcripción", "required": False, "widget": "textarea"},
+                {"fieldName": "duration", "placeholder": "Duración (s)", "required": False},
             ])
         },
         {
             "id": "image",
-            "name": "Image",
+            "name": "Imagen / Arte",
             "fields": json.dumps([
-                {"fieldName": "title", "placeholder": "Título de la imagen", "required": True},
-                {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True}
+                {"fieldName": "title", "placeholder": "Título", "required": True},
+                {"fieldName": "visual_style", "placeholder": "Estilo Visual", "required": False},
+                {"fieldName": "technique", "placeholder": "Técnica", "required": False},
+                {"fieldName": "description", "placeholder": "Descripción Visual (Caption)", "required": False, "widget": "textarea"},
+                {"fieldName": "ocr_text", "placeholder": "Texto en imagen (OCR)", "required": False, "widget": "textarea"},
+                {"fieldName": "resolution", "placeholder": "Resolución", "required": False},
+                {"fieldName": "camera_model", "placeholder": "Cámara", "required": False},
+                {"fieldName": "taken_at", "placeholder": "Fecha Captura", "required": False},
             ])
         },
         {
             "id": "video",
             "name": "Video",
             "fields": json.dumps([
-                {"fieldName": "title", "placeholder": "Título del video", "required": True},
-                {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True},
-                {"fieldName": "duration", "placeholder": "Duración en segundos", "required": False}
+                {"fieldName": "title", "placeholder": "Título", "required": True},
+                {"fieldName": "cinematography", "placeholder": "Estilo Visual / Cine", "required": False},
+                {"fieldName": "transcript", "placeholder": "Transcripción (Voz)", "required": False, "widget": "textarea"},
+                {"fieldName": "duration", "placeholder": "Duración (s)", "required": False},
+                {"fieldName": "framerate", "placeholder": "FPS", "required": False},
             ])
         },
         {
-            "id": "book",
-            "name": "Book",
+            "id": "document",
+            "name": "Documento (Texto)",
             "fields": json.dumps([
-                {"fieldName": "title", "placeholder": "Título del libro", "required": True},
-                {"fieldName": "authorName", "placeholder": "Autor del libro", "required": False},
-                {"fieldName": "publication_year", "placeholder": "Año de publicación", "required": False},
-                {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True},
-            ])
-        },
-        {
-            "id": "country",
-            "name": "Country",
-            "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre del país", "required": True},
-                {"fieldName": "iso_code", "placeholder": "Código ISO del país (ej. MX, US)", "required": False},
-            ])
-        },
-        {
-            "id": "tag",
-            "name": "Tag",
-            "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre de la etiqueta", "required": True},
-                {"fieldName": "description", "placeholder": "Descripción breve", "required": False},
+                {"fieldName": "title", "placeholder": "Título", "required": True},
+                {"fieldName": "summary", "placeholder": "Resumen", "required": False, "widget": "textarea"},
+                {"fieldName": "language", "placeholder": "Idioma", "required": False},
+                {"fieldName": "page_count", "placeholder": "Páginas", "required": False},
+                {"fieldName": "type", "placeholder": "Tipo Doc (Ensayo, Noticia)", "required": False},
             ])
         },
         {
             "id": "quote",
-            "name": "Quote",
+            "name": "Cita / Poema Corto",
             "fields": json.dumps([
-                {"fieldName": "text", "placeholder": "Texto de la cita", "required": True},
-                {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True},
-                {"fieldName": "allowEmbedding", "placeholder": "¿Permitir embeddings? (True/False)", "required": False},
-            ])
-        },
-        {
-            "id": "music",
-            "name": "Music",
-            "fields": json.dumps([
-                {"fieldName": "title", "placeholder": "Título de la canción/pieza", "required": True},
-                {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True},
-                {"fieldName": "artist", "placeholder": "Artista o banda", "required": False},
-                {"fieldName": "on_pc", "placeholder": "¿Está almacenada localmente? (True/False)", "required": False},
-            ])
-        },
-        {
-            "id": "language",
-            "name": "Language",
-            "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre del idioma (ej. Español, Inglés)", "required": True},
-                {"fieldName": "iso_code", "placeholder": "Código del idioma (ej. es, en)", "required": False},
-            ])
-        },
-        {
-            "id": "UnconnectedDoc",
-            "name": "Unconnected Document",
-            "fields": json.dumps([
-                {"fieldName": "doc_id", "placeholder": "Nombre de archivo o ID en el sistema", "required": True},
-                {"fieldName": "author", "placeholder": "Autor del documento (opcional)", "required": False},
-                {"fieldName": "title", "placeholder": "Título del documento (opcional)", "required": False},
-                {"fieldName": "work", "placeholder": "Trabajo o proyecto relacionado (opcional)", "required": False},
-                {"fieldName": "languages", "placeholder": "Lista de idiomas (ej. ['es','en'])", "required": False},
-                {"fieldName": "sentiment_word", "placeholder": "Palabra de sentimiento (opcional)", "required": False},
-                {"fieldName": "categories", "placeholder": "Categorías (ej. ['news','blog'])", "required": False},
-                {"fieldName": "keywords", "placeholder": "Palabras clave (opcional)", "required": False},
-                {"fieldName": "content_type", "placeholder": "Tipo de contenido (ej. image, video, etc.)", "required": False},
-                {"fieldName": "tags", "placeholder": "Etiquetas (opcional)", "required": False},
-                {"fieldName": "topics", "placeholder": "Temas (opcional)", "required": False},
-                {"fieldName": "style", "placeholder": "Estilo (opcional)", "required": False},
-                {"fieldName": "file_location", "placeholder": "Ubicación del archivo en el sistema", "required": False}
+                {"fieldName": "title", "placeholder": "Título (si aplica)", "required": False},
+                {"fieldName": "text", "placeholder": "Texto / Versos", "required": True, "widget": "textarea"},
+                {"fieldName": "form", "placeholder": "Forma (Haiku, Soneto)", "required": False},
+                {"fieldName": "author_ref", "placeholder": "Autor (Referencia)", "required": False},
+                {"fieldName": "context", "placeholder": "Contexto original", "required": False},
+                {"fieldName": "sentiment_score", "placeholder": "Score", "required": False, "type": "number"},
             ])
         },
         {
             "id": "post",
-            "name": "Post",
+            "name": "Publicación (Post)",
             "fields": json.dumps([
-                {"fieldName": "title", "placeholder": "Título del post (opcional)", "required": False},
-                {"fieldName": "post_id", "placeholder": "ID del post o URL única", "required": True},
-                {"fieldName": "post_type", "placeholder": "Tipo (ej. Texto, Imagen, Cita, Enlace, Video)", "required": True},
-                {"fieldName": "content", "placeholder": "Contenido principal o cuerpo del texto", "required": False},
-                {"fieldName": "image_url", "placeholder": "URL de la imagen (si aplica)", "required": False},
-                {"fieldName": "source_url", "placeholder": "URL de la fuente original (si es un reblog)", "required": False},
-                {"fieldName": "source_author", "placeholder": "Autor de la fuente original (si se conoce)", "required": False},
-                {"fieldName": "tags_string", "placeholder": "Etiquetas separadas por comas (ej. arte, filosofía)", "required": False},
-                {"fieldName": "notes", "placeholder": "Tus notas o comentarios personales sobre el post", "required": False}
+                {"fieldName": "content", "placeholder": "Contenido", "required": True, "widget": "textarea"},
+                {"fieldName": "platform", "placeholder": "Plataforma", "required": False},
+                {"fieldName": "url", "placeholder": "URL original", "required": False},
+                {"fieldName": "metrics", "placeholder": "Métricas (JSON)", "required": False},
+            ])
+        },
+
+        # ---------------------------------------------------------
+        # NIVEL 4: ENTIDADES DE CONOCIMIENTO (Destino de Conexiones)
+        # ---------------------------------------------------------
+        {
+            "id": "person",
+            "name": "Persona",
+            "fields": json.dumps([
+                {"fieldName": "name", "placeholder": "Nombre completo", "required": True},
+                {"fieldName": "roles", "placeholder": "Roles (Autor, Músico)", "required": False},
+                {"fieldName": "bio", "placeholder": "Biografía", "required": False},
+                {"fieldName": "birthdate", "placeholder": "Fecha nacimiento", "required": False},
+            ])
+        },
+        {
+            "id": "location",
+            "name": "Ubicación / Lugar",
+            "fields": json.dumps([
+                {"fieldName": "name", "placeholder": "Nombre del lugar", "required": True},
+                {"fieldName": "type", "placeholder": "Tipo (Ciudad, País, Spot)", "required": False},
+                {"fieldName": "coords", "placeholder": "Lat,Lon", "required": False},
+                {"fieldName": "iso_code", "placeholder": "ISO Code", "required": False},
             ])
         },
         {
             "id": "concept",
-            "name": "Concept",
+            "name": "Concepto / Estilo",
             "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre del Concepto", "required": True},
-                {"fieldName": "description", "placeholder": "Definición o resumen del concepto", "required": True},
-                {"fieldName": "domain", "placeholder": "Dominio o campo (ej. Filosofía, Física)", "required": False}
+                {"fieldName": "name", "placeholder": "Nombre", "required": True},
+                {"fieldName": "type", "placeholder": "Tipo (Estilo, Tema, Técnica)", "required": False},
+                {"fieldName": "definition", "placeholder": "Definición", "required": False},
+                {"fieldName": "domain", "placeholder": "Dominio (Arte, Ciencia)", "required": False},
             ])
         },
         {
             "id": "project",
-            "name": "Project",
+            "name": "Proyecto / Obra",
             "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre del Proyecto", "required": True},
-                {"fieldName": "description", "placeholder": "Objetivo o resumen del proyecto", "required": False},
-                {"fieldName": "status", "placeholder": "Estado (ej. Activo, Pausado, Completado)", "required": False},
-                {"fieldName": "start_date", "placeholder": "Fecha de inicio (YYYY-MM-DD)", "required": False},
-                {"fieldName": "end_date", "placeholder": "Fecha de finalización (YYYY-MM-DD)", "required": False}
-            ])
-        },
-        {
-            "id": "event",
-            "name": "Event",
-            "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre del Evento", "required": True},
-                {"fieldName": "date", "placeholder": "Fecha del evento (YYYY-MM-DD)", "required": False},
-                {"fieldName": "location", "placeholder": "Lugar (ej. Ciudad, País, Online)", "required": False},
-                {"fieldName": "description", "placeholder": "Descripción del evento", "required": False}
+                {"fieldName": "title", "placeholder": "Título", "required": True},
+                {"fieldName": "type", "placeholder": "Tipo (Libro, Álbum)", "required": False},
+                {"fieldName": "year", "placeholder": "Año", "required": False},
             ])
         },
         {
             "id": "organization",
-            "name": "Organization",
+            "name": "Organización",
             "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre de la Organización", "required": True},
-                {"fieldName": "type", "placeholder": "Tipo (ej. Universidad, Editorial, Empresa)", "required": False},
-                {"fieldName": "website", "placeholder": "Sitio web oficial", "required": False}
+                {"fieldName": "name", "placeholder": "Nombre", "required": True},
+                {"fieldName": "industry", "placeholder": "Industria", "required": False},
+                {"fieldName": "website", "placeholder": "Sitio Web", "required": False},
+            ])
+        },
+        {
+            "id": "event",
+            "name": "Evento",
+            "fields": json.dumps([
+                {"fieldName": "name", "placeholder": "Nombre", "required": True},
+                {"fieldName": "date", "placeholder": "Fecha", "required": False},
+                {"fieldName": "type", "placeholder": "Tipo", "required": False},
+            ])
+        },
+        {
+            "id": "tag",
+            "name": "Etiqueta",
+            "fields": json.dumps([
+                {"fieldName": "name", "placeholder": "Tag", "required": True},
             ])
         },
         {
             "id": "source",
-            "name": "Source",
+            "name": "Fuente Externa",
             "fields": json.dumps([
-                {"fieldName": "title", "placeholder": "Título de la fuente", "required": True},
-                {"fieldName": "url", "placeholder": "URL del recurso en línea", "required": False},
-                {"fieldName": "type", "placeholder": "Tipo de fuente (ej. Artículo web, Paper)", "required": False},
-                {"fieldName": "access_date", "placeholder": "Fecha de acceso (YYYY-MM-DD)", "required": False},
-                {"fieldName": "doc_id", "placeholder": "ID del archivo si aplica", "required": False}
+                {"fieldName": "title", "placeholder": "Título", "required": True},
+                {"fieldName": "url", "placeholder": "URL", "required": False},
             ])
-        },
-        {
-            "id": "person",
-            "name": "Person",
-            "fields": json.dumps([
-                {"fieldName": "name", "placeholder": "Nombre de la persona", "required": True},
-                {"fieldName": "birthdate", "placeholder": "Fecha de nacimiento (YYYY-MM-DD)", "required": False},
-                {"fieldName": "bio", "placeholder": "Breve biografía", "required": False},
-                {"fieldName": "roles", "placeholder": "Roles (ej. Autor, Actor, Traductor)", "required": False}
-            ])
-        },
+        }
     ]
 
     with driver.session() as session:
@@ -190,35 +240,60 @@ def seed_node_types():
             query = """
             MERGE (nt:NodeType {id: $id})
             SET nt.name = $name,
+                nt.description = $description,
                 nt.fields = $fields
             """
             session.run(
                 query,
                 id=node_type["id"],
                 name=node_type["name"],
+                description=node_type.get("description", ""),
                 fields=node_type["fields"]
             )
 
-    print("Tipos de nodo sembrados exitosamente.")
+    print("✅ Tipos de Nodo (Ontología Neo4j) actualizados con éxito.")
 
 
-def ensure_upload_directories():
-    """Crea los directorios requeridos para almacenar archivos subidos."""
-    base_dir = os.path.join('uploads')
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
+def ensure_minio_structure():
+    """
+    Inicializa el Bucket y las 'carpetas' base en MinIO.
+    """
+    print(f"🌊 Conectando a MinIO en {settings.AWS_S3_ENDPOINT_URL}...")
 
-    subdirs = ['images', 'videos', 'audio', 'documents', 'texts', 'others']
-    for subdir in subdirs:
-        path = os.path.join(base_dir, subdir)
-        if not os.path.exists(path):
-            os.makedirs(path)
+    s3 = boto3.client(
+        's3',
+        endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+    )
 
-    print("✅ Directorios de uploads creados correctamente.")
+    # 1. Crear el Bucket si no existe
+    try:
+        s3.head_bucket(Bucket=settings.AWS_STORAGE_BUCKET_NAME)
+        print(f"✔ Bucket '{settings.AWS_STORAGE_BUCKET_NAME}' ya existe.")
+    except ClientError:
+        print(f"✨ Creando bucket '{settings.AWS_STORAGE_BUCKET_NAME}'...")
+        s3.create_bucket(Bucket=settings.AWS_STORAGE_BUCKET_NAME)
+
+    # 2. Crear estructura de carpetas (Simulación S3)
+    # En S3 las carpetas son objetos vacíos que terminan en '/'
+    subdirs = ['images/', 'videos/', 'audio/', 'documents/', 'texts/', 'others/']
+    
+    for folder in subdirs:
+        try:
+            s3.put_object(Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=folder)
+            print(f"  📂 Carpeta '{folder}' verificada/creada.")
+        except Exception as e:
+            print(f"  ❌ Error creando '{folder}': {e}")
+
+    print("✅ Estructura MinIO sincronizada.")
 
 
 def seed_weaviate_schema() -> None:
-    """Crea colecciones en Weaviate si no existen."""
+    """
+    Configura el esquema de Weaviate con MULTI-VECTOR RETRIEVER y soporte para CONTEXTO DE USUARIO.
+    Define múltiples espacios vectoriales para cada tipo de contenido.
+    """
     client = weaviate.connect_to_custom(
         http_host=settings.WEAVIATE_HTTP_HOST,
         http_port=settings.WEAVIATE_HTTP_PORT,
@@ -230,65 +305,70 @@ def seed_weaviate_schema() -> None:
     )
     client.connect()
 
+    # Propiedades base para el enlace con Neo4j
+    common_props = [
+        wc.Property(name="doc_id", data_type=wc.DataType.TEXT, tokenization=wc.Tokenization.FIELD),
+        wc.Property(name="file_hash", data_type=wc.DataType.TEXT, tokenization=wc.Tokenization.FIELD),
+        wc.Property(name="file_location", data_type=wc.DataType.TEXT),
+        wc.Property(name="title", data_type=wc.DataType.TEXT),
+        wc.Property(name="tags", data_type=wc.DataType.TEXT_ARRAY),
+        # Campo para el texto plano de las memorias del usuario
+        wc.Property(name="user_memories", data_type=wc.DataType.TEXT), 
+    ]
+
     collections_cfg = [
         dict(
-            name="Imagenes",
-            description="Imágenes con vectores CLIP, OCR y descripción",
+            name="Image",
+            description="Imágenes con multi-vector (Visual, OCR, Semántico, Usuario)",
             vectorizer_config=[
-                wc.Configure.NamedVectors.none(name="vector_clip"),
-                wc.Configure.NamedVectors.none(name="vector_ocr"),
-                wc.Configure.NamedVectors.none(name="vector_des"),
+                wc.Configure.NamedVectors.none(name="visual"),       # CLIP (Imagen)
+                wc.Configure.NamedVectors.none(name="ocr"),          # Texto OCR
+                wc.Configure.NamedVectors.none(name="description"),  # Caption Semántico
+                wc.Configure.NamedVectors.none(name="user_context"), # Vector de Memorias del Usuario
             ],
-            properties=[
-                wc.Property(name="title", data_type=wc.DataType.TEXT),
-                wc.Property(name="doc_id", data_type=wc.DataType.TEXT),
-                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
-                wc.Property(name="analysis", data_type=wc.DataType.TEXT),
-                wc.Property(name="content", data_type=wc.DataType.TEXT),
-            ],
-        ),
-        dict(
-            name="Textos",
-            description="Documentos de texto (vector BYO)",
-            vectorizer_config=wc.Configure.Vectorizer.none(),
-            properties=[
-                wc.Property(name="title", data_type=wc.DataType.TEXT),
-                wc.Property(name="author", data_type=wc.DataType.TEXT),
-                wc.Property(name="content", data_type=wc.DataType.TEXT),
-                wc.Property(name="analysis", data_type=wc.DataType.TEXT),
-                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
-                wc.Property(name="doc_id", data_type=wc.DataType.TEXT),
-            ],
-        ),
-        dict(
-            name="Audio",
-            description="Archivos de audio",
-                    vectorizer_config=[
-            wc.Configure.NamedVectors.none(name="vector_audio"),
-            wc.Configure.NamedVectors.none(name="vector_text"),
-        ],
-            properties=[
-                wc.Property(name="title", data_type=wc.DataType.TEXT),
-                wc.Property(name="doc_id", data_type=wc.DataType.TEXT),
-                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
-                wc.Property(name="analysis", data_type=wc.DataType.TEXT),
-                wc.Property(name="content", data_type=wc.DataType.TEXT),
+            properties=common_props + [
+                wc.Property(name="ocr_text", data_type=wc.DataType.TEXT),
+                wc.Property(name="description", data_type=wc.DataType.TEXT),
             ],
         ),
         dict(
             name="Video",
-            description="Archivos de video",
+            description="Videos con multi-vector (Visual, Audio, Transcript, Usuario)",
             vectorizer_config=[
-            wc.Configure.NamedVectors.none(name="vector_video" ),
-            wc.Configure.NamedVectors.none(name="vector_audio"),
-            wc.Configure.NamedVectors.none(name="vector_text"  ),
+                wc.Configure.NamedVectors.none(name="visual"),      # XCLIP (Frames)
+                wc.Configure.NamedVectors.none(name="audio"),       # AudioCLIP (Sonido/Música)
+                wc.Configure.NamedVectors.none(name="transcript"),  # Whisper (Voz)
+                wc.Configure.NamedVectors.none(name="user_context"),# Vector de Memorias
             ],
-            properties=[
-                wc.Property(name="title", data_type=wc.DataType.TEXT),
-                wc.Property(name="doc_id", data_type=wc.DataType.TEXT),
-                wc.Property(name="file_location", data_type=wc.DataType.TEXT),
-                wc.Property(name="analysis", data_type=wc.DataType.TEXT),
+            properties=common_props + [
+                wc.Property(name="transcript_text", data_type=wc.DataType.TEXT),
+                wc.Property(name="duration", data_type=wc.DataType.NUMBER),
+            ],
+        ),
+        dict(
+            name="Audio",
+            description="Audio con multi-vector (Acústico, Semántico, Usuario)",
+            vectorizer_config=[
+                wc.Configure.NamedVectors.none(name="audio"),       # Wav2Vec (Acústico)
+                wc.Configure.NamedVectors.none(name="transcript"),  # Texto (Letra/Voz)
+                wc.Configure.NamedVectors.none(name="user_context"),# Vector de Memorias
+            ],
+            properties=common_props + [
+                wc.Property(name="transcript_text", data_type=wc.DataType.TEXT),
+                wc.Property(name="artist", data_type=wc.DataType.TEXT),
+            ],
+        ),
+        dict(
+            name="Document",
+            description="Documentos y Textos con vector de contenido y contexto",
+            vectorizer_config=[
+                wc.Configure.NamedVectors.none(name="content"),      # Vector del contenido principal
+                wc.Configure.NamedVectors.none(name="user_context"), # Vector de Memorias
+            ],
+            properties=common_props + [
                 wc.Property(name="content", data_type=wc.DataType.TEXT),
+                wc.Property(name="doc_type", data_type=wc.DataType.TEXT),
+                wc.Property(name="author", data_type=wc.DataType.TEXT),
             ],
         ),
     ]
@@ -297,7 +377,7 @@ def seed_weaviate_schema() -> None:
 
     for cfg in collections_cfg:
         if cfg["name"] in existing:
-            print(f'✔ "{cfg["name"]}" ya existe.')
+            print(f'✔ Colección Weaviate "{cfg["name"]}" ya existe.')
             continue
 
         client.collections.create(
@@ -306,7 +386,6 @@ def seed_weaviate_schema() -> None:
             properties=cfg["properties"],
             vectorizer_config=cfg["vectorizer_config"],
         )
-        print(f'✅ Colección "{cfg["name"]}" creada.')
+        print(f'✅ Colección Weaviate "{cfg["name"]}" creada con Multi-Vectores.')
 
     client.close()
-

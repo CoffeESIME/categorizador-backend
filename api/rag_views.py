@@ -1,7 +1,10 @@
 # rag/views.py
+import logging
 from collections import defaultdict
 from typing import List, Dict, Tuple
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, JSONParser, FormParser
@@ -60,6 +63,7 @@ class MultiModalSearchView(APIView):
     def post(self, request, *args, **kwargs):
         data = request.data
         query_txt = data.get("query", "")
+        logger.info(f"MultiModalSearchView: Received search query: '{query_txt}'")
 
         flags = {
             "text": data.get("search_text") in ("true", True, "1"),
@@ -76,6 +80,7 @@ class MultiModalSearchView(APIView):
             "video": int(data.get("k_video", 5)),
         }
         if not any(flags.values()):
+            logger.warning("MultiModalSearchView: No search domain selected.")
             return Response(
                 {"error": "Selecciona al menos un dominio de búsqueda."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -155,4 +160,6 @@ class MultiModalSearchView(APIView):
                     CLASSES["video"], vec, ks["video"], VIDEO_VECTOR_FIELDS["video"]
                 )
 
+        total_results = sum(len(v) for v in results.values())
+        logger.info(f"MultiModalSearchView: Search completed. Found {total_results} total results.")
         return Response({"query_used": query_txt, **results})

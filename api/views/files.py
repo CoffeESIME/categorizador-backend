@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import logging
 
 from django.conf import settings
 from rest_framework.views import APIView
@@ -12,6 +13,8 @@ from langchain_ollama import OllamaEmbeddings
 from ..embeddings_to_neo import store_embedding
 from ..serializers import UploadedFileSerializer
 from ..models import UploadedFile
+
+logger = logging.getLogger(__name__)
 
 from ..tasks import (
     process_pdf_task,
@@ -26,8 +29,10 @@ class MultiFileUploadView(APIView):
     def post(self, request, *args, **kwargs):
         files = request.FILES.getlist("files")
         if not files:
+            logger.warning("MultiFileUploadView: No files received in request.")
             return Response({"error": "No se enviaron archivos"}, status=status.HTTP_400_BAD_REQUEST)
         
+        logger.info(f"MultiFileUploadView: Received {len(files)} files for upload.")
         uploaded_files = []
         for file in files:
             original_name = file.name
@@ -41,6 +46,7 @@ class MultiFileUploadView(APIView):
                 status='pending',
                 original_name=sanitized_name  
             )
+            logger.info(f"MultiFileUploadView: File '{sanitized_name}' uploaded successfully. ID: {instance.id}")
             uploaded_files.append({
                 "id": instance.id,
                 "original_name": sanitized_name,  
@@ -78,9 +84,11 @@ class MetadataProcessingView(APIView):
     """
 
     def post(self, request):
+        logger.info("MetadataProcessingView: Received metadata processing request.")
         try:
             file_metadata_list = request.data
             if not isinstance(file_metadata_list, list):
+                logger.error("MetadataProcessingView: Invalid input format. Expected list.")
                 return Response(
                     {"error": "La entrada debe ser un array de objetos."},
                     status=status.HTTP_400_BAD_REQUEST
@@ -90,6 +98,7 @@ class MetadataProcessingView(APIView):
             for meta in file_metadata_list:
                 file_id = meta.get("original_name")
                 if not file_id:
+                    logger.warning("MetadataProcessingView: Missing 'original_name' in metadata item.")
                     results.append({"error": "No se recibió 'id' en los metadatos"})
                     continue
                 try:
@@ -109,64 +118,78 @@ class MetadataProcessingView(APIView):
                 embedding = []
                 uploads_dir = os.path.join('uploads', meta.get("file_location"))
                 print("data", meta, embedding_type)
-                try:
                 task_result = None
                 try:
                     if embedding_type == "pdf":
+                        logger.info(f"MetadataProcessingView: Triggering PDF task for file '{file_id}'.")
                         task_result = process_pdf_task.delay(file_id, meta)
 
                     elif embedding_type == "image_w_des":
                         image_path = uploads_dir
                         if not image_path or not os.path.exists(image_path):
+                            logger.error(f"MetadataProcessingView: Image not found at '{image_path}' for file '{file_id}'.")
                             results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
                             continue
+                        logger.info(f"MetadataProcessingView: Triggering Image Description task for file '{file_id}'.")
                         task_result = process_image_with_description_task.delay(file_id, meta, image_path)
 
                     elif embedding_type == "ocr_w_img":
                         image_path = uploads_dir
                         if not image_path or not os.path.exists(image_path):
+                            logger.error(f"MetadataProcessingView: Image not found at '{image_path}' for file '{file_id}'.")
                             results.append({"id": file_id, "error": "No se encontró la imagen en 'file_location'"})
                             continue
+                        logger.info(f"MetadataProcessingView: Triggering OCR task for file '{file_id}'.")
                         task_result = process_ocr_with_image_task.delay(file_id, meta, image_path)
 
                     elif embedding_type == "audio":
                         audio_path = uploads_dir
                         if not audio_path or not os.path.exists(audio_path):
+                            logger.error(f"MetadataProcessingView: Audio not found at '{audio_path}' for file '{file_id}'.")
                             results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
                             continue
+                        logger.info(f"MetadataProcessingView: Triggering Audio task for file '{file_id}'.")
                         task_result = process_audio_file_task.delay(file_id, meta, audio_path)
                         embedding = [1]
 
                     elif embedding_type in ["audio_text", "audio+text"]:
                         audio_path = uploads_dir
                         if not audio_path or not os.path.exists(audio_path):
+                            logger.error(f"MetadataProcessingView: Audio not found at '{audio_path}' for file '{file_id}'.")
                             results.append({"id": file_id, "error": "No se encontró el audio en 'file_location'"})
                             continue
+                        logger.info(f"MetadataProcessingView: Triggering Audio+Text task for file '{file_id}'.")
                         task_result = process_audio_file_task.delay(file_id, meta, audio_path, transcribe=True)
                         embedding = [1]
 
                     elif embedding_type in ["video_audio", "video+audio"]:
                         video_path = uploads_dir
                         if not video_path or not os.path.exists(video_path):
+                            logger.error(f"MetadataProcessingView: Video not found at '{video_path}' for file '{file_id}'.")
                             results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
                             continue
+                        logger.info(f"MetadataProcessingView: Triggering Video+Audio task for file '{file_id}'.")
                         task_result = process_video_file_task.delay(file_id, meta, video_path, include_audio=True)
                         embedding = [1]
 
                     elif embedding_type == "video":
                         video_path = uploads_dir
                         if not video_path or not os.path.exists(video_path):
+                            logger.error(f"MetadataProcessingView: Video not found at '{video_path}' for file '{file_id}'.")
                             results.append({"id": file_id, "error": "No se encontró el video en 'file_location'"})
                             continue
                         print('now here')
+                        logger.info(f"MetadataProcessingView: Triggering Video task for file '{file_id}'.")
                         task_result = process_video_file_task.delay(file_id, meta, video_path)
                         embedding = [1]
 
                     else:
+                        logger.info(f"MetadataProcessingView: Triggering Text Embeddings task for file '{file_id}'.")
                         task_result = process_text_embeddings_task.delay(meta)
                         embedding = [1] # Placeholder, result will be async
 
                 except Exception as proc_err:
+                    logger.error(f"MetadataProcessingView: Error triggering task for file '{file_id}': {str(proc_err)}", exc_info=True)
                     results.append({"id": file_id, "error": str(proc_err)})
                     continue
                 
@@ -205,6 +228,7 @@ class MetadataProcessingView(APIView):
             }, status=status.HTTP_200_OK)
 
         except Exception as e:
+            logger.error(f"MetadataProcessingView: Unexpected error: {str(e)}", exc_info=True)
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

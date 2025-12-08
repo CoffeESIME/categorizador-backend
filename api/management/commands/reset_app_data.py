@@ -1,11 +1,12 @@
 import os
 import shutil
+import boto3  # <--- Importar boto3
 from django.core.management.base import BaseCommand, CommandError
 from django.conf import settings
 
 # Importar cliente Weaviate y la clase Filter
 from api.weaviate_client import CLIENT as weaviate_client
-from weaviate.classes.query import Filter # <--- Importar Filter
+from weaviate.classes.query import Filter
 
 # Importar modelos Django
 from api.models import UploadedFile, FileMetadataModel
@@ -14,7 +15,7 @@ from api.models import UploadedFile, FileMetadataModel
 from api.neo4j_client import driver as neo4j_driver, close_driver as close_neo4j_connection
 
 class Command(BaseCommand):
-    help = 'Resetea la aplicación: vacía Neo4j, SQLite, Weaviate y elimina los archivos subidos.'
+    help = 'Resetea la aplicación: vacía Neo4j, SQLite, Weaviate y MinIO (S3).'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -27,14 +28,14 @@ class Command(BaseCommand):
         if not options['confirm']:
             self.stdout.write(self.style.WARNING(
                 "Este comando es destructivo y borrará todos los datos de Neo4j, SQLite, Weaviate "
-                "y los archivos en la carpeta 'uploads'."
+                "y los archivos en MinIO."
             ))
             self.stdout.write(self.style.WARNING(
                 "Ejecuta de nuevo con la opción --confirm para proceder."
             ))
             return
 
-        self.stdout.write(self.style.WARNING("Iniciando el reseteo de la aplicación..."))
+        self.stdout.write(self.style.WARNING("Iniciando el reseteo TOTAL de la aplicación..."))
 
         try:
             # 1. Vaciar Neo4j
@@ -48,7 +49,7 @@ class Command(BaseCommand):
 
             # 2. Vaciar tablas de SQLite
             try:
-                self.stdout.write("Vaciando tablas de SQLite (UploadedFile, FileMetadataModel)...")
+                self.stdout.write("Vaciando tablas de SQLite...")
                 UploadedFile.objects.all().delete()
                 FileMetadataModel.objects.all().delete()
                 self.stdout.write(self.style.SUCCESS("Tablas de SQLite vaciadas correctamente."))
@@ -58,76 +59,86 @@ class Command(BaseCommand):
             # 3. Vaciar Weaviate
             try:
                 self.stdout.write("Vaciando colecciones de Weaviate...")
-                collection_names = ["Imagenes", "Textos", "Audio", "Video", "PdfChunks"]
+                # Lista actualizada con tus colecciones reales (incluyendo Image, Video, etc.)
+                collection_names = ["Image", "Video", "Audio", "Document", "Imagenes", "Textos", "PdfChunks"]
                 
-                # Definir un filtro que probablemente coincida con todos los objetos
-                # Asumimos que la propiedad 'doc_id' es de tipo texto y existe en la mayoría de los objetos.
-                # Si 'doc_id' no siempre existe o no es texto, podrías necesitar un filtro diferente,
-                # o filtrar por una propiedad que sí sea universal en tus datos.
-                # Filter.by_property("doc_id").is_not_none() también es una buena opción.
+                # Intentamos borrar todo lo que tenga un doc_id (o sea, todo)
                 match_all_filter = Filter.by_property("doc_id").like("*")
 
                 for name in collection_names:
                     try:
                         if weaviate_client.collections.exists(name):
                             collection = weaviate_client.collections.get(name)
-                            # Usar el filtro definido en lugar de where=None
+                            # Borrado masivo
                             collection.data.delete_many(where=match_all_filter)
-                            self.stdout.write(self.style.SUCCESS(f"Objetos de la colección '{name}' en Weaviate eliminados."))
+                            self.stdout.write(self.style.SUCCESS(f"Objetos de '{name}' eliminados."))
                         else:
-                            self.stdout.write(self.style.NOTICE(f"La colección '{name}' no existe en Weaviate, omitiendo."))
+                            pass # Silencioso si no existe
                     except Exception as e_coll:
-                        self.stdout.write(self.style.WARNING(f"Advertencia al procesar la colección '{name}' en Weaviate: {e_coll}"))
-                self.stdout.write(self.style.SUCCESS("Colecciones de Weaviate procesadas."))
+                        self.stdout.write(self.style.WARNING(f"Warn en Weaviate '{name}': {e_coll}"))
+                self.stdout.write(self.style.SUCCESS("Weaviate procesado."))
             except Exception as e:
                 raise CommandError(f"Error al procesar Weaviate: {e}")
 
-            # 4. Eliminar archivos de la carpeta 'uploads'
+            # 4. Eliminar archivos de 'uploads' (Local - Legacy)
+            # Mantenemos esto por si acaso quedan archivos locales viejos
             try:
                 uploads_path = settings.MEDIA_ROOT
-                self.stdout.write(f"Eliminando contenido de la carpeta de uploads: {uploads_path}...")
                 if os.path.exists(uploads_path):
-                    subdirs_to_clear = ['images', 'videos', 'audio', 'documents', 'texts', 'others']
-                    
-                    for subdir_name in subdirs_to_clear:
-                        dir_path = os.path.join(uploads_path, subdir_name)
-                        if os.path.isdir(dir_path):
-                            shutil.rmtree(dir_path)
-                            os.makedirs(dir_path)
-                            self.stdout.write(self.style.SUCCESS(f"Directorio '{dir_path}' limpiado y recreado."))
-                    
+                    self.stdout.write(f"Limpiando carpeta local {uploads_path}...")
                     for item in os.listdir(uploads_path):
                         item_path = os.path.join(uploads_path, item)
-                        if os.path.isfile(item_path) and item.endswith(".json"): # Elimina todos los JSON en la raíz de uploads
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
                             os.remove(item_path)
-                            self.stdout.write(self.style.SUCCESS(f"Archivo JSON '{item_path}' eliminado."))
-                else:
-                    self.stdout.write(self.style.WARNING(f"La carpeta de uploads '{uploads_path}' no existe."))
-                self.stdout.write(self.style.SUCCESS("Archivos de uploads eliminados y directorios base recreados."))
+                    self.stdout.write(self.style.SUCCESS("Archivos locales eliminados."))
             except Exception as e:
-                raise CommandError(f"Error al eliminar archivos de uploads: {e}")
+                self.stdout.write(self.style.WARNING(f"Error limpiando uploads locales: {e}"))
 
-        except CommandError as e: # Re-lanzar CommandError para que Django lo maneje.
+            # 5. Vaciar MinIO (S3) - ¡NUEVO!
+            try:
+                bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+                self.stdout.write(f"Vaciando Bucket S3: {bucket_name}...")
+                
+                s3 = boto3.resource(
+                    's3',
+                    endpoint_url=settings.AWS_S3_ENDPOINT_URL,
+                    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                )
+                
+                bucket = s3.Bucket(bucket_name)
+                
+                # Verificar si el bucket existe antes de intentar borrar
+                if bucket.creation_date:
+                    # Esta instrucción borra TODOS los objetos y versiones en el bucket
+                    bucket.objects.all().delete()
+                    self.stdout.write(self.style.SUCCESS(f"Bucket '{bucket_name}' vaciado completamente."))
+                else:
+                    self.stdout.write(self.style.WARNING(f"El bucket '{bucket_name}' no existe o no es accesible."))
+
+            except Exception as e:
+                # No lanzamos CommandError fatal, solo advertencia, por si MinIO está apagado
+                self.stdout.write(self.style.ERROR(f"Error al limpiar MinIO: {e}"))
+
+        except CommandError as e:
             raise e
-        except Exception as e: # Capturar otros errores inesperados.
-            raise CommandError(f"Un error inesperado ocurrió durante el reseteo: {e}")
+        except Exception as e:
+            raise CommandError(f"Error inesperado: {e}")
         finally:
             self.stdout.write("Cerrando conexiones...")
+            # Cerrar Weaviate
             try:
-                if weaviate_client and hasattr(weaviate_client, 'is_connected') and weaviate_client.is_connected():
+                if weaviate_client:
                     weaviate_client.close()
-                    self.stdout.write(self.style.SUCCESS("Conexión Weaviate cerrada."))
-                elif weaviate_client and hasattr(weaviate_client, 'close'): # Intento genérico de cierre
-                     weaviate_client.close()
-                     self.stdout.write(self.style.SUCCESS("Conexión Weaviate cerrada (intento genérico)."))
-            except Exception as e:
-                self.stdout.write(self.style.WARNING(f"Error al cerrar conexión Weaviate: {e}"))
+            except:
+                pass
             
+            # Cerrar Neo4j
             try:
-                # Usar la función close_driver importada de tu neo4j_client.py
                 close_neo4j_connection()
-                self.stdout.write(self.style.SUCCESS("Conexión Neo4j cerrada."))
-            except Exception as e:
-                self.stdout.write(self.style.WARNING(f"Error al cerrar conexión Neo4j: {e}"))
+            except:
+                pass
 
-        self.stdout.write(self.style.SUCCESS("Reseteo de la aplicación completado."))
+        self.stdout.write(self.style.SUCCESS("✅ RESETEO COMPLETADO EXITOSAMENTE."))
